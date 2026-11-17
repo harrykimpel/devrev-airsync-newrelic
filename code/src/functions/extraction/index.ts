@@ -3,6 +3,7 @@ import { AirSyncEvent, spawn } from '@devrev/airsync-sdk';
 import initialDomainMapping from '../external-system/initial_domain_mapping.json';
 
 export interface ExtractorState {
+  runId?: string;
   issues: { completed: boolean; cursor?: string; start?: number; end?: number };
 }
 

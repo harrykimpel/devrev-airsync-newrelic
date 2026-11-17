@@ -33,7 +33,7 @@ it disables redirects and strips Axios request details from reported errors.
 | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` | `P0`, `P1`, `P2`, `P3` |
 | `CLOSED` | `completed` stage |
 | Other states | `in_development` stage |
-| Source deep link | External item URL |
+| Issue ID and regional New Relic host | External item URL |
 | Created/updated timestamps | Created/modified dates |
 
 IDs include both the account ID and source issue ID. No owners or creators are
@@ -48,11 +48,17 @@ starting an import.
 - Subsequent runs use AirSync's `extract_from`, overlapping by one minute. If it is
   absent, the connector requests the previous 30 days again with stable IDs.
 - Each invocation processes one NerdGraph page. The cursor and frozen start/end
-  window survive continuations. Completed extractions and excluded record types
-  are skipped. A cursor advances only after the page is accepted by the SDK repo.
-- HTTP 429, server/network failures and GraphQL throttling return a delayed
-  extraction result. Other GraphQL errors fail the phase, including partial
-  responses, so an inaccessible account is not silently imported as empty.
+  window survive continuations within the same `run_id`. A new run resets
+  completion, cursor and time bounds, including state from older installations.
+  Completed extractions in the same run and excluded record types are skipped.
+  A cursor advances only after the page is accepted by the SDK repo.
+- During issue extraction, HTTP 429, server/network failures and GraphQL
+  throttling return an AirSync delay result. Account discovery is non-resumable
+  in SDK 2.0.0, so it retries transient failures inside the worker instead:
+  at most three attempts within four minutes, honoring the requested delay and
+  stopping on an SDK timeout. Delays that exceed this budget fail with retry
+  guidance. Other GraphQL errors fail the phase, including partial responses,
+  so an inaccessible account is not silently imported as empty.
 - The AiIssues API requires the experimental opt-in header. Its schema can change.
 - Users, raw telemetry, entity inventory, dashboards, attachments, deletion
   propagation and write-back are outside this initial implementation. Unexpected
@@ -74,8 +80,9 @@ npm test -- --runInBand
 ```
 
 Tests use mocked API responses and cover regional authentication, account
-selection, pagination and continuation state, retry delays, partial errors,
-credential-safe error messages, normalization and import-only metadata.
+selection, pagination, per-run state resets and continuations, bounded discovery
+retries, extraction delays, partial errors, credential-safe error messages,
+regional links and import-only metadata.
 
 For local development, copy `code/.env.example` to `code/.env`, set the DevRev
 organization/email and `NEW_RELIC_API_KEY`, and use the fixtures under

@@ -12,7 +12,6 @@ export interface NewRelicIssue {
   createdAt: number;
   updatedAt: number;
   entityNames?: string[];
-  deepLinkUrl?: string;
 }
 
 export interface IssuePage {

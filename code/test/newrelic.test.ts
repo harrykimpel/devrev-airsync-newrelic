@@ -38,6 +38,8 @@ test('discovers accounts and queries the selected account with cursor variables'
   post.mockResolvedValueOnce({ data: { data: { actor: { account: { aiIssues: { issues: page } } } } } });
   expect(await client.getIssues('123', 1000, 2000, 'page-one')).toEqual(page);
   expect(post).toHaveBeenLastCalledWith('', { query: expect.stringContaining('startTime: 1000, endTime: 2000'), variables: { accountId: 123, cursor: 'page-one' } });
+  // AiIssuesIssue has no deepLinkUrl field; selecting it rejects the whole query.
+  expect(post.mock.calls[post.mock.calls.length - 1][1].query).not.toMatch(/\bdeepLinkUrl\b/);
   await expect(client.getIssues('123) { other }', 1000, 2000)).rejects.toThrow('account ID');
 });
 
@@ -70,12 +72,13 @@ test('does not retry unauthorized requests or accept a repeated pagination curso
   await expect(client.getIssues('123', 1000, 2000, 'same')).rejects.toThrow('repeated cursor');
 });
 
-test('normalizes stable account-qualified IDs, dates, source context and regional URLs', () => {
-  const issue = { issueId: 'abc', title: ['Latency', 'Errors'], description: ['Details'], state: 'CLOSED', priority: 'CRITICAL', createdAt: 1000, updatedAt: 2000, entityNames: ['checkout'] };
-  const item = normalizeIssue(issue, '123', 'EU');
-  expect(item).toMatchObject({ id: '123:abc', created_date: '1970-01-01T00:00:01.000Z', modified_date: '1970-01-01T00:00:02.000Z', data: { title: 'Latency; Errors', state: 'CLOSED', priority: 'CRITICAL', item_url_field: 'https://one.eu.newrelic.com/redirect/issue/abc?accountId=123' } });
+test.each(['US', 'EU'] as const)('normalizes stable IDs, dates, source context and %s URLs without a source deep link', (region) => {
+  const issue = { issueId: 'abc/def', title: ['Latency', 'Errors'], description: ['Details'], state: 'CLOSED', priority: 'CRITICAL', createdAt: 1000, updatedAt: 2000, entityNames: ['checkout'] };
+  const item = normalizeIssue(issue, '123', region);
+  const host = region === 'EU' ? 'one.eu.newrelic.com' : 'one.newrelic.com';
+  expect(item).toMatchObject({ id: '123:abc/def', created_date: '1970-01-01T00:00:01.000Z', modified_date: '1970-01-01T00:00:02.000Z', data: { title: 'Latency; Errors', state: 'CLOSED', priority: 'CRITICAL', item_url_field: `https://${host}/redirect/issue/abc%2Fdef?accountId=123` } });
   expect((item.data as Record<string, unknown>).body).toContain('Entities: checkout');
-  expect((normalizeIssue({ ...issue, title: [] }, '123', 'US').data as Record<string, unknown>).title).toBe('New Relic issue abc');
+  expect((normalizeIssue({ ...issue, title: [] }, '123', region).data as Record<string, unknown>).title).toBe('New Relic issue abc/def');
 });
 
 test('metadata and mappings expose import-only issues with no dangling template references', () => {

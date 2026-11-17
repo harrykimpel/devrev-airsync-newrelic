@@ -10,6 +10,13 @@ processExtractionTask<ExtractorState>({
     const client = new HttpClient(adapter.event);
     const accountId = adapter.event.payload.event_context.external_sync_unit_id;
     adapter.initializeRepos([{ itemType: 'issues', normalize: (item: object) => normalizeIssue(item as NewRelicIssue, accountId, client.region) }]);
+    const runId = adapter.event.payload.event_context.run_id;
+    // AirSync retains connector state between runs as well as continuations.
+    // Only reuse a completion flag, cursor and query window within the same run.
+    if (adapter.state.runId !== runId) {
+      adapter.state.runId = runId;
+      adapter.state.issues = { completed: false };
+    }
     const state = adapter.state.issues;
     if (state.completed || !adapter.shouldExtract('issues')) return { status: 'success' };
     if (adapter.isTimeout) return { status: 'progress' };

@@ -8,7 +8,8 @@
     },
     "event_type": "START_EXTRACTING_DATA",
     "event_context": {
-      "external_sync_unit_id": "1234567"
+      "external_sync_unit_id": "1234567",
+      "run_id": "fixture-run-1"
     }
   }
 }

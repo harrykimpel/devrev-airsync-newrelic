@@ -23,7 +23,7 @@ export function normalizeIssue(issue: NewRelicIssue, accountId: string, region: 
         issue.entityNames?.length ? `Entities: ${issue.entityNames.join(', ')}` : undefined].filter(Boolean).join('\n\n'),
       priority: issue.priority,
       state: issue.state,
-      item_url_field: issue.deepLinkUrl || `https://${host}/redirect/issue/${encodeURIComponent(issue.issueId)}?accountId=${accountId}`,
+      item_url_field: `https://${host}/redirect/issue/${encodeURIComponent(issue.issueId)}?accountId=${accountId}`,
     },
   };
 }
