@@ -26,10 +26,7 @@ service_account:
         scopes:
           - scope: issue:read
             optional: true
-            reason: Read the issue selected by the user to fetch New Relic context
-          - scope: comment:write
-            optional: true
-            reason: Post an internal New Relic context snapshot as the requesting user
+            reason: Read the selected issue and post its internal New Relic context snapshot as the requesting user
 
 functions:
   - name: extraction

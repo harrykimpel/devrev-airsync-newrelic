@@ -218,7 +218,7 @@ test('manifest routes real issue buttons to the exported handler with user crede
   expect(buttons.map((b: { value: string }) => b.value)).toEqual(['alert', 'recent']);
   expect(buttons.every((b: { action_id: string }) => b.action_id === 'fetch_newrelic_context')).toBe(true);
   expect(manifest.service_account.scopes.impersonate[0]).toEqual({ act_as: 'all_devusers', scopes: [
-    expect.objectContaining({ scope: 'issue:read', optional: true }), expect.objectContaining({ scope: 'comment:write', optional: true }),
+    expect.objectContaining({ scope: 'issue:read', optional: true }),
   ] });
 });
 

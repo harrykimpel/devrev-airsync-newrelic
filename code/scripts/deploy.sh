@@ -9,6 +9,18 @@ NC='\033[0m'
 error() { echo -e "${RED}ERROR: $1${NC}"; }
 success() { echo -e "${GREEN}SUCCESS: $1${NC}"; }
 
+# DevRev CLI output can mix build logs, ANSI escapes and JSON API responses.
+# Some CLI releases return zero even for an API error, so inspect JSON as well.
+devrev_json_objects() {
+    jq -Rs 'gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") as $output |
+        (try ($output | fromjson) catch ($output | split("\n")[] | fromjson?)) | select(type == "object")'
+}
+
+devrev_output_has_error() {
+    printf '%s\n' "$1" | devrev_json_objects | jq -se 'any(.[];
+        .error? != null or (.message? != null and (.type? != null or .debug_message? != null)))' >/dev/null
+}
+
 # Prompt with default value
 prompt_with_default() {
     local prompt="$1"
@@ -354,7 +366,7 @@ if [ "$DEPLOY_MODE" = "local" ]; then
     devrev snap_in_version create-one --manifest ./manifest.yaml --package "$SIP_ID" --testing-url "$NGROK_URL" 2>&1 | tee "$LOCAL_CREATE_LOG"
     CREATE_EXIT=${PIPESTATUS[0]}
 
-    if [ $CREATE_EXIT -ne 0 ]; then
+    if [ $CREATE_EXIT -ne 0 ] || devrev_output_has_error "$(cat "$LOCAL_CREATE_LOG")"; then
         error "Failed to create snap-in version"
         echo ""
         echo "=== devrev CLI output ==="
@@ -414,15 +426,15 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
         script -q "$TEMP_OUTPUT" devrev snap_in_version create-one --path "." --package "$SIP_ID"
     else
-        script -q -c "devrev snap_in_version create-one --path '.' --package '$SIP_ID'" "$TEMP_OUTPUT"
+        # util-linux script otherwise masks the child's nonzero exit status.
+        script -q -e -c "devrev snap_in_version create-one --path '.' --package '$SIP_ID'" "$TEMP_OUTPUT"
     fi
+    CREATE_EXIT=$?
 
     VER_OUTPUT=$(cat "$TEMP_OUTPUT")
     rm -f "$TEMP_OUTPUT"
 
-    FILTERED_OUTPUT=$(echo "$VER_OUTPUT" | grep "snap_in_version" | grep -o '{.*}')
-
-    if echo "$FILTERED_OUTPUT" | jq '.message' 2>/dev/null | grep -v null > /dev/null; then
+    if [ $CREATE_EXIT -ne 0 ] || devrev_output_has_error "$VER_OUTPUT"; then
         error "Failed to create snap-in version"
         echo ""
         echo "=== devrev CLI output ==="
@@ -432,7 +444,7 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
         exit 1
     fi
 
-    VERSION_ID=$(echo "$FILTERED_OUTPUT" | jq -r '.snap_in_version.id' 2>/dev/null)
+    VERSION_ID=$(printf '%s\n' "$VER_OUTPUT" | devrev_json_objects | jq -r '.snap_in_version.id // empty' | head -1)
 
     if [ -z "$VERSION_ID" ] || [ "$VERSION_ID" == "null" ]; then
         error "Failed to get version ID"
@@ -476,8 +488,9 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
 
     echo "Creating snap-in draft..."
     DRAFT_OUTPUT=$(devrev snap_in draft --snap_in_version "$VERSION_ID" 2>&1)
+    DRAFT_EXIT=$?
 
-    if echo "$DRAFT_OUTPUT" | jq '.message' 2>/dev/null | grep -v null > /dev/null; then
+    if [ $DRAFT_EXIT -ne 0 ] || devrev_output_has_error "$DRAFT_OUTPUT"; then
         error "Failed to create draft"
         echo "$DRAFT_OUTPUT"
         echo "Orphan snap-in package left behind: $SIP_ID (run 'npm run cleanup' to remove it)"
@@ -488,8 +501,9 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
 
     echo "Activating snap-in..."
     ACTIVATE_OUTPUT=$(devrev snap_in activate 2>&1)
+    ACTIVATE_EXIT=$?
 
-    if echo "$ACTIVATE_OUTPUT" | jq '.message' 2>/dev/null | grep -v null > /dev/null; then
+    if [ $ACTIVATE_EXIT -ne 0 ] || devrev_output_has_error "$ACTIVATE_OUTPUT"; then
         error "Failed to activate snap-in"
         echo "$ACTIVATE_OUTPUT"
         echo "Orphan snap-in package left behind: $SIP_ID (run 'npm run cleanup' to remove it)"
