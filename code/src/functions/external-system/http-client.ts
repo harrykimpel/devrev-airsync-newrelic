@@ -78,7 +78,7 @@ export class HttpClient {
       query($accountId: Int!, $cursor: String) {
         actor { account(id: $accountId) { aiIssues {
           issues(cursor: $cursor, timeWindow: { startTime: ${start}, endTime: ${end} }) {
-            issues { issueId title description priority state createdAt updatedAt entityNames deepLinkUrl }
+            issues { issueId title description priority state createdAt updatedAt entityNames }
             nextCursor
           }
         } } }
