@@ -77,7 +77,9 @@ test.each(['US', 'EU'] as const)('normalizes stable IDs, dates, source context a
   const item = normalizeIssue(issue, '123', region);
   const host = region === 'EU' ? 'one.eu.newrelic.com' : 'one.newrelic.com';
   expect(item).toMatchObject({ id: '123:abc/def', created_date: '1970-01-01T00:00:01.000Z', modified_date: '1970-01-01T00:00:02.000Z', data: { title: 'Latency; Errors', state: 'CLOSED', priority: 'CRITICAL', item_url_field: `https://${host}/redirect/issue/abc%2Fdef?accountId=123` } });
-  expect((item.data as Record<string, unknown>).body).toContain('Entities: checkout');
+  const data = item.data as Record<string, string>;
+  expect(data.body).toContain('Entities: checkout');
+  expect(data.body.startsWith(`[Open in New Relic](<${data.item_url_field}>)`)).toBe(true);
   expect((normalizeIssue({ ...issue, title: [] }, '123', region).data as Record<string, unknown>).title).toBe('New Relic issue abc/def');
 });
 

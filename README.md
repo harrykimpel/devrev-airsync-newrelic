@@ -33,7 +33,7 @@ it disables redirects and strips Axios request details from reported errors.
 | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` | `P0`, `P1`, `P2`, `P3` |
 | `CLOSED` | `completed` stage |
 | Other states | `in_development` stage |
-| Issue ID and regional New Relic host | External item URL |
+| Issue ID and regional New Relic host | External item URL and “Open in New Relic” link in the issue body |
 | Created/updated timestamps | Created/modified dates |
 
 IDs include both the account ID and source issue ID. No owners or creators are
