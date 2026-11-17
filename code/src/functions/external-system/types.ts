@@ -12,6 +12,7 @@ export interface NewRelicIssue {
   createdAt: number;
   updatedAt: number;
   entityNames?: string[];
+  entityGuids?: string[];
 }
 
 export interface IssuePage {

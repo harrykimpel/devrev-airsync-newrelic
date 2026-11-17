@@ -5,6 +5,7 @@ import { HttpClient, NewRelicApiError } from '../src/functions/external-system/h
 import { normalizeIssue } from '../src/functions/external-system/data-normalization';
 import metadata from '../src/functions/external-system/external_domain_metadata.json';
 import mapping from '../src/functions/external-system/initial_domain_mapping.json';
+import { issuePermalink, parseIssueReference } from '../src/functions/external-system/links';
 
 jest.mock('axios');
 const post = jest.fn();
@@ -76,7 +77,12 @@ test.each(['US', 'EU'] as const)('normalizes stable IDs, dates, source context a
   const issue = { issueId: 'abc/def', title: ['Latency', 'Errors'], description: ['Details'], state: 'CLOSED', priority: 'CRITICAL', createdAt: 1000, updatedAt: 2000, entityNames: ['checkout'] };
   const item = normalizeIssue(issue, '123', region);
   const host = region === 'EU' ? 'one.eu.newrelic.com' : 'one.newrelic.com';
-  expect(item).toMatchObject({ id: '123:abc/def', created_date: '1970-01-01T00:00:01.000Z', modified_date: '1970-01-01T00:00:02.000Z', data: { title: 'Latency; Errors', state: 'CLOSED', priority: 'CRITICAL', item_url_field: `https://${host}/redirect/issue/abc%2Fdef?accountId=123` } });
+  expect(item).toMatchObject({ id: '123:abc/def', created_date: '1970-01-01T00:00:01.000Z', modified_date: '1970-01-01T00:00:02.000Z', data: { title: 'Latency; Errors', state: 'CLOSED', priority: 'CRITICAL', item_url_field: issuePermalink('123', issue.issueId, region) } });
+  const url = new URL((item.data as Record<string, string>).item_url_field);
+  expect(url.hostname).toBe(host);
+  expect(url.pathname).toBe('/launcher/nrai.launcher');
+  expect(JSON.parse(Buffer.from(url.searchParams.get('pane')!, 'base64').toString())).toEqual({ isPhoton: true, id: 'abc/def', nerdletId: 'nrai.issue-redirect' });
+  expect(parseIssueReference(url.href)).toEqual({ accountId: '123', issueId: 'abc/def', region });
   const data = item.data as Record<string, string>;
   expect(data.body).toContain('Entities: checkout');
   expect(data.body.startsWith(`[Open in New Relic](<${data.item_url_field}>)`)).toBe(true);

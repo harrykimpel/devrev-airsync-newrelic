@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { AirSyncEvent } from '@devrev/airsync-sdk';
 
-import { IssuePage, NewRelicAccount } from './types';
+import { IssuePage, NewRelicAccount, NewRelicIssue } from './types';
 
 export class NewRelicApiError extends Error {
   constructor(message: string, public readonly delaySeconds?: number) {
@@ -13,21 +13,22 @@ export class HttpClient {
   private readonly http: AxiosInstance;
   readonly region: 'US' | 'EU';
 
-  constructor(event: AirSyncEvent) {
+  constructor(event: AirSyncEvent | { org_id: string; key: string }, timeoutMs = 30000) {
     // The connection's subdomain is a region, never an arbitrary API hostname.
-    const subdomain = event.payload.connection_data.org_id?.toLowerCase();
+    const connection = 'payload' in event ? event.payload.connection_data : event;
+    const subdomain = connection.org_id?.toLowerCase();
     const region = subdomain === 'api' || subdomain === 'us' ? 'US' : subdomain === 'api.eu' || subdomain === 'eu' ? 'EU' : undefined;
     if (region !== 'US' && region !== 'EU') {
       throw new Error('Set the New Relic connection subdomain to api (US) or api.eu (EU).');
     }
-    if (!event.payload.connection_data.key) throw new Error('A New Relic user API key is required.');
+    if (!connection.key) throw new Error('A New Relic user API key is required.');
     this.region = region;
     this.http = axios.create({
       baseURL: region === 'EU' ? 'https://api.eu.newrelic.com/graphql' : 'https://api.newrelic.com/graphql',
-      timeout: 30000,
+      timeout: timeoutMs,
       maxRedirects: 0,
       headers: {
-        'API-Key': event.payload.connection_data.key,
+        'API-Key': connection.key,
         'Content-Type': 'application/json',
         'nerd-graph-unsafe-experimental-opt-in': 'AiIssues',
       },
@@ -65,6 +66,38 @@ export class HttpClient {
     );
     if (!Array.isArray(data.actor?.accounts)) throw new NewRelicApiError('New Relic returned no accounts.');
     return data.actor.accounts;
+  }
+
+  async getIssue(accountId: string, issueId: string, createdAt: number): Promise<NewRelicIssue> {
+    if (!/^[1-9]\d*$/.test(accountId) || Number(accountId) > 2147483647 ||
+      !issueId || issueId.length > 256 || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > Date.now()) {
+      throw new Error('Invalid New Relic issue reference or creation date.');
+    }
+    // Some imported DevRev records use their import time as created_date.
+    // Cover the connector's initial 30-day lookback as well as older preserved dates.
+    const start = Math.max(0, Math.min(createdAt - 60000, Date.now() - 30 * 86400000));
+    const data = await this.query<{ actor: { account: { aiIssues: { issues: IssuePage } } } }>(`
+      query($accountId: Int!) {
+        actor { account(id: $accountId) { aiIssues {
+          issues(filter: { ids: [${JSON.stringify(issueId)}] }, timeWindow: { startTime: ${start}, endTime: ${Date.now()} }) {
+            issues { issueId title priority state createdAt updatedAt entityNames entityGuids }
+          }
+        } } }
+      }`, { accountId: Number(accountId) });
+    const issue = data.actor?.account?.aiIssues?.issues?.issues?.find((candidate) => candidate.issueId === issueId);
+    if (!issue) throw new NewRelicApiError('Source issue is unavailable. Check account access and New Relic issue retention.');
+    return issue;
+  }
+
+  async nrql(accountId: string, query: string): Promise<Record<string, unknown>[]> {
+    if (!/^[1-9]\d*$/.test(accountId) || Number(accountId) > 2147483647) throw new Error('Invalid New Relic account ID.');
+    const data = await this.query<{ actor: { account: { nrql: { results: Record<string, unknown>[] } } } }>(`
+      query($accountId: Int!, $query: Nrql!) {
+        actor { account(id: $accountId) { nrql(query: $query, timeout: 5) { results } } }
+      }`, { accountId: Number(accountId), query });
+    const results = data.actor?.account?.nrql?.results;
+    if (!Array.isArray(results)) throw new NewRelicApiError('New Relic returned no NRQL results. Check account query permissions.');
+    return results;
   }
 
   async getIssues(accountId: string, start: number, end: number, cursor?: string): Promise<IssuePage> {

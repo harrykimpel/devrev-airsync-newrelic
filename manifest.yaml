@@ -21,10 +21,70 @@ service_account:
       - scope: sync_history:read
         optional: false
         reason: Read sync history
+    impersonate:
+      - act_as: all_devusers
+        scopes:
+          - scope: issue:read
+            optional: true
+            reason: Read the issue selected by the user to fetch New Relic context
+          - scope: comment:write
+            optional: true
+            reason: Post an internal New Relic context snapshot as the requesting user
 
 functions:
   - name: extraction
     description: Extract New Relic accounts and alert issues
+  - name: fetch_newrelic_context
+    description: Fetch bounded New Relic metrics, logs and trace samples for an issue
+
+keyrings:
+  user:
+    - name: newrelic_context
+      display_name: New Relic context connection
+      description: Your New Relic user key with query access to the source alert account; select the matching regional connection.
+      types:
+        - newrelic-user-key
+
+snap_kit_actions:
+  - name: fetch_newrelic_context
+    description: Fetch New Relic telemetry and post an internal issue comment
+    function: fetch_newrelic_context
+
+snap_components:
+  - name: newrelic_context
+    display_name: New Relic context
+    description: Fetch metrics, error logs and trace samples for this New Relic issue
+    surface: issue
+    snap_kit_action_name: fetch_newrelic_context
+    snap_kit_body:
+      snaps:
+        - type: card
+          title:
+            type: plain_text
+            text: New Relic context
+          elements:
+            - type: content
+              elements:
+                - type: plain_text
+                  text: Fetch telemetry for the alert’s affected entities. Default window is 15 minutes before/after the alert; results are posted as an internal comment.
+            - type: actions
+              direction: row
+              elements:
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  style: primary
+                  value: alert
+                  text:
+                    type: plain_text
+                    text: Fetch New Relic context
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: recent
+                  text:
+                    type: plain_text
+                    text: Fetch latest 30 minutes
 
 keyring_types:
   - id: newrelic-user-key
