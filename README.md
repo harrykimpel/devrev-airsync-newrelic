@@ -37,9 +37,12 @@ it disables redirects and strips Axios request details from reported errors.
 | Created/updated timestamps | Created/modified dates |
 
 IDs include both the account ID and source issue ID. No owners or creators are
-fabricated. The initial domain mapping asks the installer to select an applicable
-DevRev product. Review the priority and stage mappings for your workspace before
-starting an import.
+fabricated from source data. The initial domain mapping asks the installer to
+select an applicable DevRev product and one or more DevRev issue owners. New Relic
+alert issues have no user ownership field, so the selected DevRev users supply
+the required issue owners. Missing priorities fall back to P2; missing states
+fall back to the `in_development` stage. Review these defaults and the priority
+and stage mappings for your workspace before starting an import.
 
 ## Extraction and limits
 
