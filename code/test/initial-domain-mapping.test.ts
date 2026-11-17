@@ -55,7 +55,9 @@ test('required title keeps a nonempty text fallback', () => {
 test.each([
   ['applies_to_part_id', 'product', false],
   ['owned_by_ids', 'devu', true],
-] as const)('required reference %s asks the installer for compatible DevRev records', (field, objectType, isArray) => {
+  ['created_by_id', 'devu', false],
+] as const)('reference %s asks the installer for compatible DevRev records', (field, objectType, isArray) => {
+  expect(issueFields[field]).toMatchObject({ forward: true, reverse: false });
   expect(issueFields[field].transformation_method_for_set).toEqual({
     transformation_method: 'use_devrev_record',
     leaf_type: { object_category: 'stock', object_type: objectType },
