@@ -98,6 +98,9 @@ cleanup_package() {
     fi
 }
 
+echo "This command creates a new installation. For an existing one, use npm run upgrade -- <snap-in-version-id>."
+echo ""
+
 # Deployment mode selection
 DEPLOY_MODES=("Local  - Deploy with ngrok tunnel" "Lambda - Deploy to Lambda")
 interactive_menu "Select deployment mode:" 0 "${DEPLOY_MODES[@]}"

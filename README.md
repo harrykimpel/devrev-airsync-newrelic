@@ -149,6 +149,38 @@ assuming the zero timestamp means expired. If no usable token exists in
 Codespaces, the scripts stop with instructions instead of opening a terminal
 browser. Tokens are not printed or passed as command-line arguments.
 
+### Update an existing installation
+
+`npm run deploy` creates a new package, version and installed snap-in. Reusing
+its package slug does not overwrite an installation; the create operation can
+fail with a slug conflict. Use the explicit upgrade command for routine changes.
+
+Find the package and its **current snap-in version ID** using the DevRev UI or:
+
+```sh
+devrev snap_in_package list
+devrev snap_in_version list --package '<package-id>'
+```
+
+From `code/`, upgrade that exact version using the repository's current code:
+
+```sh
+npm run upgrade -- '<full-snap-in-version-id>'
+```
+
+This uses the same `.env`/PAT authentication as deployment and calls
+`devrev snap_in_version upgrade`. It does not create another package or draft,
+and does not use `--force`. Incompatible upgrades fail so you can review them;
+DevRev documents that forcing an incompatible upgrade can delete installations.
+The upgrade command selects the CLI's supported positional-ID or `--version`
+syntax from its help output. The version ID changes after an upgrade: obtain the
+current ID before the next upgrade. Check completion/status in DevRev before
+starting another sync. No live upgrade has been verified by this project's tests.
+
+Upgrading code does not automatically rewrite existing AirSync recipes. Review
+mapping changes against the existing import separately. See [DevRev's upgrade
+behavior](https://developer.devrev.ai/snapin-development/upgrade-snap-ins).
+
 Before production use, validate with a test account:
 
 1. Confirm the keyring accepts a valid user key and rejects an invalid key.
