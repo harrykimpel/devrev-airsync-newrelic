@@ -33,7 +33,7 @@ it disables redirects and strips Axios request details from reported errors.
 | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` | `P0`, `P1`, `P2`, `P3` |
 | `CLOSED` | `completed` stage |
 | Other states | `in_development` stage |
-| Issue ID and regional New Relic host | External item URL and “Open in New Relic” link in the issue body |
+| Account/issue ID and regional New Relic host | Issue permalink and “Open in New Relic” link in the issue body |
 | Created/updated timestamps | Created/modified dates |
 
 IDs include both the account ID and source issue ID. No owners or creators are
@@ -56,6 +56,92 @@ selected recipe or existing issue creators. Review the existing import's mapping
 choices after upgrading the snap-in, and validate creator attribution on newly
 imported issues. A fresh test import is another way to verify the new defaults.
 
+### Alert permalinks
+
+Links use the New Relic Issues launcher with a URL-encoded, base64 pane containing
+`isPhoton: true`, the exact issue ID and `nerdletId: nrai.issue-redirect`, plus the
+account ID. The host follows the connection region (`one.newrelic.com` or
+`one.eu.newrelic.com`). `/redirect/issue/...` is not a supported issue route and
+can fall through to the entity catalog. The launcher format is also used by
+[Port's New Relic issue integration](https://docs.port.io/context-lake/ingestion/ingest-data-into-port/native-integrations/available-integrations/apm-alerting/newrelic/).
+
+Re-sync source issues with the updated extractor to replace stored links. An
+incremental sync only refreshes records returned by New Relic; unchanged older
+records may need a historical re-sync. The context action also understands the
+old link format and posts a corrected link in its result comment.
+
+## Fetch New Relic context on an issue
+
+Open an imported issue and find the **New Relic context** component:
+
+- **Fetch New Relic context** queries 15 minutes before/after alert creation,
+  clipping the end to the current time.
+- **Fetch latest 30 minutes** queries the same affected entities for the most
+  recent 30 minutes, useful during an ongoing investigation.
+
+In the snap-in's configuration, select your **New Relic context connection**
+under user connections. You can select an existing New Relic connection you can
+access, with a **user API key** for the source account and region. AirSync's
+`connection_data` is only delivered to extraction events; an issue action needs
+this separate user connection selection. The action sends this key only to the
+fixed regional NerdGraph endpoint inferred from the source alert link. Grant
+the optional `issue:read` and `comment:write` impersonation permissions. Both
+DevRev API calls run as the clicking user; the bot cannot bypass an access denial.
+
+The action loads the exact source issue and its entity GUIDs, then posts an
+**internal discussion comment** containing:
+
+- A corrected source alert permalink, account, entity GUIDs and UTC window.
+- APM throughput (requests/min), average duration (ms) and error percentage from
+  `apm.service.*` metrics, grouped by entity.
+- Up to 10 error/warning log samples, with messages limited to 400 characters.
+- Up to 5 trace summaries ranked by slowest observed span, followed by up to 10
+  sampled spans from those trace IDs within the same entity/time bounds.
+- The exact NRQL queries, row limits, truncation notices and section failures.
+
+At most 10 affected entities are queried; extra entities are reported as omitted.
+Alerts without GUIDs produce an explanation instead of an account-wide query.
+Unrelated DevRev issues are rejected. Queries use NerdGraph variables, allowlisted
+identifiers, a five-second NRQL timeout and ten-second HTTP timeouts. The three
+initial telemetry queries run independently, so unavailable logs do not discard
+successful metrics/traces. Delivery retries reuse a unique comment reference;
+clicking again deliberately creates a new snapshot.
+
+Only selected attributes are fetched. Common credentials and email addresses,
+including the active API/session keys, are scrubbed before posting; output rows
+are capped at 650 characters. This is best-effort scrubbing, not a guarantee that
+logs contain no sensitive data. The comment is visible internally to the DevRev
+organization, so use a New Relic key approved for sharing these samples there.
+
+APM metrics require compatible instrumentation; infrastructure-only alerts may
+have no such metrics. Logs need entity correlation and a recognized `level`.
+Traces require retained Span events with `trace.id`. Returned spans are sampled
+evidence, not a complete distributed trace, and the slowest span is not the full
+trace duration. Empty data and query failures are shown explicitly; no automatic
+root-cause conclusion is generated. This is an on-demand snapshot, not continuous
+telemetry ingestion. The snap component is visible on issue views, and the
+handler verifies the source before fetching anything.
+
+References: [DevRev issue components](https://developer.devrev.ai/snapin-development/references/snap-components),
+[NRQL via NerdGraph](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-nrql-tutorial/),
+[APM metric queries](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-apm-metric-timeslice-data-nrql/).
+
+### Installing the context action on an existing organization
+
+This release adds a user connection. DevRev's documented
+[upgrade compatibility rules](https://developer.devrev.ai/snapin-development/upgrade-snap-ins)
+do **not** permit adding a connection to an existing snap-in version. If
+`npm run upgrade -- <version-DON>` rejects the manifest, do not use `--force`:
+that can delete the existing snap-in and disrupt its AirSync.
+
+Use `npm run deploy` to install the updated snap-in alongside the existing one,
+configure the user connection and permissions, and use its issue component on
+the existing imported issues. **Do not create a second AirSync** for this new
+installation. The existing AirSync continues running from its original snap-in.
+To update that original extractor's stored links in place, apply the code changes
+with its original manifest and use the normal version upgrade, then re-sync.
+Fresh installations can use this manifest for both AirSync and the context action.
+
 ## Extraction and limits
 
 - Initial imports request the previous **30 days**, subject to New Relic retention
@@ -75,7 +161,7 @@ imported issues. A fresh test import is another way to verify the new defaults.
   guidance. Other GraphQL errors fail the phase, including partial responses,
   so an inaccessible account is not silently imported as empty.
 - The AiIssues API requires the experimental opt-in header. Its schema can change.
-- Users, raw telemetry, entity inventory, dashboards, attachments, deletion
+- Bulk telemetry import, users, entity inventory, dashboards, attachments, deletion
   propagation and write-back are outside this initial implementation. Unexpected
   loading events explicitly fail instead of reporting simulated success.
 
@@ -98,6 +184,10 @@ Tests use mocked API responses and cover regional authentication, account
 selection, pagination, per-run state resets and continuations, bounded discovery
 retries, extraction delays, partial errors, credential-safe error messages,
 regional links and import-only metadata.
+Context-action tests additionally cover issue access, per-user credentials,
+bounded queries, sampled spans, partial failures, secret scrubbing, historical
+source links and idempotent comment delivery. All use mocked APIs; deployment,
+UI rendering, permissions and queries must also be checked in a live organization.
 
 For local development, copy `code/.env.example` to `code/.env`, set the DevRev
 organization/email and `NEW_RELIC_API_KEY`, and use the fixtures under

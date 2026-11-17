@@ -1,6 +1,7 @@
 import { ExternalSyncUnit, NormalizedItem } from '@devrev/airsync-sdk';
 
 import { NewRelicAccount, NewRelicIssue } from './types';
+import { issuePermalink } from './links';
 
 export function normalizeAccount(account: NewRelicAccount): ExternalSyncUnit {
   return {
@@ -12,8 +13,7 @@ export function normalizeAccount(account: NewRelicAccount): ExternalSyncUnit {
 }
 
 export function normalizeIssue(issue: NewRelicIssue, accountId: string, region: 'US' | 'EU'): NormalizedItem {
-  const host = region === 'EU' ? 'one.eu.newrelic.com' : 'one.newrelic.com';
-  const itemUrl = `https://${host}/redirect/issue/${encodeURIComponent(issue.issueId)}?accountId=${accountId}`;
+  const itemUrl = issuePermalink(accountId, issue.issueId, region);
   return {
     id: `${accountId}:${issue.issueId}`,
     created_date: new Date(issue.createdAt).toISOString(),
