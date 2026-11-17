@@ -27,3 +27,40 @@ test.each(['priority', 'stage'] as const)('%s jq consumes the primary external f
   });
   expect(fields[field].primary_external_field).toBe(field === 'priority' ? 'priority' : 'state');
 });
+
+// Required stock issue fields in DevRev's published target-field contract:
+// https://developer.devrev.ai/airsync/object-types/issue
+// Keep this broader than the field named in the first server error.
+const issueFields = mapping.additional_mappings.record_type_mappings.issues.possible_record_type_mappings[0].shard.stock_field_mappings;
+
+test.each(['applies_to_part_id', 'owned_by_ids', 'priority', 'stage', 'title'] as const)('required issue field %s has an enabled creation mapping', (field) => {
+  expect(issueFields[field]).toMatchObject({ forward: true, reverse: false });
+  expect(issueFields[field].transformation_method_for_set.transformation_method).toEqual(expect.any(String));
+});
+
+test.each([
+  ['priority', 'P2'],
+  ['stage', 'in_development'],
+] as const)('required enum %s has a typed fallback when the source value is absent', (field, value) => {
+  expect(issueFields[field]).toMatchObject({
+    fallback: { type: 'enum', value },
+    transformation_method_for_set: { can_apply_to_null: false, use_primary_input: true },
+  });
+});
+
+test('required title keeps a nonempty text fallback', () => {
+  expect(issueFields.title.fallback).toMatchObject({ type: 'text', value: expect.stringMatching(/\S/) });
+});
+
+test.each([
+  ['applies_to_part_id', 'product', false],
+  ['owned_by_ids', 'devu', true],
+] as const)('required reference %s asks the installer for compatible DevRev records', (field, objectType, isArray) => {
+  expect(issueFields[field].transformation_method_for_set).toEqual({
+    transformation_method: 'use_devrev_record',
+    leaf_type: { object_category: 'stock', object_type: objectType },
+    is_array: isArray,
+  });
+  // References come from the import's user selections, never invented DONs.
+  expect(issueFields[field]).not.toHaveProperty('primary_external_field');
+});

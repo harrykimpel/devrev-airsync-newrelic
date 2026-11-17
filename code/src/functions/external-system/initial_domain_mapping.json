@@ -98,6 +98,10 @@
                     "forward_jq": "if . == \"CRITICAL\" then \"P0\" elif . == \"HIGH\" then \"P1\" elif . == \"MEDIUM\" then \"P2\" else \"P3\" end",
                     "can_apply_to_null": false,
                     "use_primary_input": true
+                  },
+                  "fallback": {
+                    "type": "enum",
+                    "value": "P2"
                   }
                 },
                 "stage": {
@@ -109,6 +113,10 @@
                     "forward_jq": "if . == \"CLOSED\" then \"completed\" else \"in_development\" end",
                     "can_apply_to_null": false,
                     "use_primary_input": true
+                  },
+                  "fallback": {
+                    "type": "enum",
+                    "value": "in_development"
                   }
                 },
                 "title": {
@@ -121,6 +129,18 @@
                   "reverse": false,
                   "transformation_method_for_set": {
                     "transformation_method": "use_directly"
+                  }
+                },
+                "owned_by_ids": {
+                  "forward": true,
+                  "reverse": false,
+                  "transformation_method_for_set": {
+                    "transformation_method": "use_devrev_record",
+                    "leaf_type": {
+                      "object_category": "stock",
+                      "object_type": "devu"
+                    },
+                    "is_array": true
                   }
                 }
               }
