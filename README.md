@@ -85,7 +85,8 @@ access, with a **user API key** for the source account and region. AirSync's
 `connection_data` is only delivered to extraction events; an issue action needs
 this separate user connection selection. The action sends this key only to the
 fixed regional NerdGraph endpoint inferred from the source alert link. Grant
-the optional `issue:read` and `comment:write` impersonation permissions. Both
+the optional `issue:read` impersonation permission. Timeline entries use their
+parent issue's permissions; DevRev has no separate `comment:write` scope. Both
 DevRev API calls run as the clicking user; the bot cannot bypass an access denial.
 
 The action loads the exact source issue and its entity GUIDs, then posts an

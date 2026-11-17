@@ -26,7 +26,7 @@ function validateEvent(input: unknown): ContextEvent {
 function devRevFailure(operation: string, error: unknown): Error {
   const status = axios.isAxiosError(error) ? error.response?.status : undefined;
   // SDK errors, like Axios errors, can contain authentication headers. Never serialize them.
-  return new Error(`DevRev ${operation} failed (${status ?? 'request error'}). Check issue access and grant the issue:read and comment:write action permissions.`);
+  return new Error(`DevRev ${operation} failed (${status ?? 'request error'}). Check issue access and grant the issue:read impersonation permission; timeline entries use the parent issue's permissions.`);
 }
 
 async function handleEvent(input: unknown) {
