@@ -186,27 +186,9 @@ fi
 DEVREV_ENV="${ENV:-prod}"
 
 echo ""
-# Skip authenticate if the stored token for this env/org/user is still valid.
-EXPIRY_RAW=$(devrev profiles get-token expiry --env "$DEVREV_ENV" --org "$DEV_ORG" --usr "$USER_EMAIL" 2>/dev/null)
-EXPIRY_EPOCH=""
-if [ -n "$EXPIRY_RAW" ]; then
-    # GNU date first (Linux), then BSD date (macOS) with a couple of format fallbacks
-    # for the CLI's "YYYY-MM-DD HH:MM:SS.fff +ZZZZ TZ" shape.
-    EXPIRY_EPOCH=$(date -d "$EXPIRY_RAW" +%s 2>/dev/null \
-        || date -j -f "%Y-%m-%d %H:%M:%S.%N %z %Z" "$EXPIRY_RAW" +%s 2>/dev/null \
-        || date -j -f "%Y-%m-%d %H:%M:%S" "${EXPIRY_RAW%% +*}" +%s 2>/dev/null)
-fi
-NOW_EPOCH=$(date +%s)
-
-if [ -n "$EXPIRY_EPOCH" ] && [ "$EXPIRY_EPOCH" -gt "$NOW_EPOCH" ]; then
-    success "Already authenticated as $USER_EMAIL into $DEV_ORG ($DEVREV_ENV) — token valid until $EXPIRY_RAW"
-else
-    echo "Authenticating as $USER_EMAIL into $DEV_ORG ($DEVREV_ENV)..."
-    if ! devrev profiles authenticate --env "$DEVREV_ENV" --usr "$USER_EMAIL" --org "$DEV_ORG" --expiry 5; then
-        error "DevRev authentication failed"
-        exit 1
-    fi
-    success "Authenticated"
+source "$SCRIPT_DIR/devrev-auth.sh"
+if ! authenticate_devrev "$DEVREV_ENV" "$DEV_ORG" "$USER_EMAIL"; then
+    exit 1
 fi
 echo ""
 

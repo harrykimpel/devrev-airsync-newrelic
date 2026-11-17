@@ -95,8 +95,28 @@ reads credentials from AirSync's `connection_data`.
 
 Install the [DevRev CLI](https://developer.devrev.ai/snapin-development/references/cli-install),
 `jq`, and `ngrok` if using local deployment. From `code`, run `npm run deploy` and
-choose local or Lambda deployment. After installing the snap-in, open DevRev
-AirSync, create the regional connection, select an account and import.
+choose local or Lambda deployment. The script prompts for your DevRev organization
+slug and email, authenticates, builds the version and activates the snap-in.
+You can set the prompt defaults in `code/.env`:
+
+```ini
+DEV_ORG=your-org-slug
+USER_EMAIL=you@example.com
+ENV=prod
+```
+
+The current public DevRev CLI targets production and does not accept `--env`.
+The scripts check the installed CLI's help and pass an environment flag only
+when supported. A non-production `ENV` with a CLI that has no environment
+selector fails before deployment. To authenticate manually with the public CLI:
+
+```sh
+devrev profiles authenticate --org your-org-slug --usr you@example.com
+```
+
+See the [DevRev authentication guide](https://developer.devrev.ai/snapin-development/tutorials/getting-started).
+After installing the snap-in, open DevRev AirSync, create the regional connection,
+select an account and import.
 
 Before production use, validate with a test account:
 
