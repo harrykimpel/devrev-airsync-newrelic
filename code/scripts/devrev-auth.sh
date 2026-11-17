@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared by deploy.sh and cleanup.sh; uses their error()/success() helpers.
+# Shared by deploy.sh, upgrade.sh and cleanup.sh; uses their error()/success() helpers.
 authenticate_devrev() {
     local environment="$1"
     local organization="$2"
@@ -22,6 +22,9 @@ authenticate_devrev() {
         error "This DevRev CLI does not support environment selection (ENV=$environment). Use ENV=prod for production, or a CLI that supports your target environment."
         return 1
     fi
+
+    # Callers can pin subsequent operations to this same environment.
+    DEVREV_ENV_ARGS=("${environment_args[@]}")
 
     # Codespaces/CI can provide a PAT without a browser callback. Import via
     # stdin: never put the credential in CLI arguments or deployment logs.
