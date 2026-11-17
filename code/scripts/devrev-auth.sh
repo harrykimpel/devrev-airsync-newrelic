@@ -23,6 +23,21 @@ authenticate_devrev() {
         return 1
     fi
 
+    # Codespaces/CI can provide a PAT without a browser callback. Import via
+    # stdin: never put the credential in CLI arguments or deployment logs.
+    if [ -n "${DEVREV_TOKEN:-}" ]; then
+        if ! printf '%s\n' "$DEVREV_TOKEN" | devrev profiles set-token "${environment_args[@]}" --org "$organization" --usr "$user_email" >/dev/null 2>&1; then
+            error "Could not save DEVREV_TOKEN to the selected CLI profile. Check that it is a DevRev PAT for $organization."
+            return 1
+        fi
+        if ! devrev snap_in_package list "${environment_args[@]}" --org "$organization" --usr "$user_email" --first-n 1 >/dev/null 2>&1; then
+            error "DEVREV_TOKEN could not access snap-in packages. Check the PAT, target organization and permissions. Browser login was not attempted."
+            return 1
+        fi
+        success "Authenticated with DEVREV_TOKEN for $organization ($environment)"
+        return 0
+    fi
+
     # Explicit org/user selectors also select the CLI context for subsequent
     # deployment/cleanup commands (the CLI saves the last-used org and user).
     local expiry_raw expiry_for_date expiry_without_fraction expiry_epoch=""
@@ -43,7 +58,19 @@ authenticate_devrev() {
 
     if [ -n "$expiry_epoch" ] && [ "$expiry_epoch" -gt "$(date +%s)" ]; then
         success "Already authenticated as $user_email into $organization ($environment) — token valid until $expiry_raw"
+    elif [[ "$expiry_raw" == 0001-01-01* ]] || { [ -n "$expiry_raw" ] && [ -z "$expiry_epoch" ]; }; then
+        # Manually imported PATs can have Go's zero timestamp rather than an
+        # expiry. Unknown metadata is not proof of an expired credential.
+        if ! devrev snap_in_package list "${environment_args[@]}" --org "$organization" --usr "$user_email" --first-n 1 >/dev/null 2>&1; then
+            error "Could not validate the saved token for $organization. Check the PAT, CLI profile, network and snap-in permissions. Browser login was not attempted."
+            return 1
+        fi
+        success "Authenticated with the saved token for $organization ($environment); expiry metadata is unavailable"
     else
+        if [ "${CODESPACES:-}" = "true" ]; then
+            error "No usable saved token was found. In Codespaces, set DEVREV_TOKEN to a DevRev PAT or use 'devrev profiles set-token --org $organization --usr $user_email'. Browser login was not attempted."
+            return 1
+        fi
         echo "Authenticating as $user_email into $organization ($environment)..."
         if ! devrev profiles authenticate "${environment_args[@]}" --usr "$user_email" --org "$organization" --expiry 5; then
             error "DevRev authentication failed"
