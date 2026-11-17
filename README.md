@@ -1,72 +1,110 @@
-# AirSync TODO snap-in
+# New Relic AirSync connector for DevRev
 
-Syncs data between TODO and DevRev using DevRev's AirSync platform.
+Imports New Relic alert issues into DevRev through `@devrev/airsync-sdk` 2.0.0.
+Each accessible New Relic account appears as a selectable external sync unit.
+This initial implementation supports **import only**.
 
-## Prerequisites
+## Connection
 
-Install the following tools:
+Create a New Relic **user API key** with access to the accounts you want to import.
+Ingest/license keys cannot query NerdGraph.
 
-- [Node.js 20 or newer](https://nodejs.org/en/download/)
-- [DevRev CLI](https://developer.devrev.ai/snapin-development/references/cli-install)
-- [jq](https://jqlang.github.io/jq/download/)
-- [ngrok](https://ngrok.com/download) (for local development)
+When creating the DevRev connection, enter:
 
-## Setup
+| Field | Value |
+| --- | --- |
+| User API key | Your New Relic user API key |
+| Subdomain, US region | `api` |
+| Subdomain, EU region | `api.eu` |
 
-1. Navigate to the `code` directory:
+The keyring verifies the credential against the authenticated regional REST
+`/v2/applications.json` endpoint. Import discovery then checks NerdGraph account
+access. The connector sends the key only to the fixed regional NerdGraph endpoint;
+it disables redirects and strips Axios request details from reported errors.
+
+## Imported data
+
+| New Relic | DevRev |
+| --- | --- |
+| Account | External sync unit |
+| Alert issue | Issue |
+| Title(s) | Title |
+| Description, source state/priority, entity names | Body |
+| `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` | `P0`, `P1`, `P2`, `P3` |
+| `CLOSED` | `completed` stage |
+| Other states | `in_development` stage |
+| Issue ID and regional New Relic host | External item URL |
+| Created/updated timestamps | Created/modified dates |
+
+IDs include both the account ID and source issue ID. No owners or creators are
+fabricated. The initial domain mapping asks the installer to select an applicable
+DevRev product. Review the priority and stage mappings for your workspace before
+starting an import.
+
+## Extraction and limits
+
+- Initial imports request the previous **30 days**, subject to New Relic retention
+  and API access limits. This connector does not promise full historical import.
+- Subsequent runs use AirSync's `extract_from`, overlapping by one minute. If it is
+  absent, the connector requests the previous 30 days again with stable IDs.
+- Each invocation processes one NerdGraph page. The cursor and frozen start/end
+  window survive continuations within the same `run_id`. A new run resets
+  completion, cursor and time bounds, including state from older installations.
+  Completed extractions in the same run and excluded record types are skipped.
+  A cursor advances only after the page is accepted by the SDK repo.
+- During issue extraction, HTTP 429, server/network failures and GraphQL
+  throttling return an AirSync delay result. Account discovery is non-resumable
+  in SDK 2.0.0, so it retries transient failures inside the worker instead:
+  at most three attempts within four minutes, honoring the requested delay and
+  stopping on an SDK timeout. Delays that exceed this budget fail with retry
+  guidance. Other GraphQL errors fail the phase, including partial responses,
+  so an inaccessible account is not silently imported as empty.
+- The AiIssues API requires the experimental opt-in header. Its schema can change.
+- Users, raw telemetry, entity inventory, dashboards, attachments, deletion
+  propagation and write-back are outside this initial implementation. Unexpected
+  loading events explicitly fail instead of reporting simulated success.
+
+API references: [New Relic issue queries](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-issues-api-via-github/)
+and [DevRev connection configuration](https://developer.devrev.ai/airsync/authentication).
+
+## Development
+
+Install Node.js 20 or newer, then:
 
 ```sh
 cd code
-```
-
-2. Install dependencies:
-
-```sh
 npm ci
+npm run build
+npm run lint
+npm test -- --runInBand
 ```
 
-3. (Optional) Create a `.env` file to set default values for the prompts:
+Tests use mocked API responses and cover regional authentication, account
+selection, pagination, per-run state resets and continuations, bounded discovery
+retries, extraction delays, partial errors, credential-safe error messages,
+regional links and import-only metadata.
 
-```sh
-cp .env.example .env
-```
+For local development, copy `code/.env.example` to `code/.env`, set the DevRev
+organization/email and `NEW_RELIC_API_KEY`, and use the fixtures under
+`code/fixtures`. Replace the fixture account ID `1234567` with an account you can
+access. Fixture placeholders are resolved by the local test runner; they are not
+runtime environment variables used by the deployed connector. The connector
+reads credentials from AirSync's `connection_data`.
 
-Edit `.env` with your DevRev organization slug and email:
+## Deployment and live validation
 
-```ini
-DEV_ORG=my-org
-USER_EMAIL=my@email.com
-```
+Install the [DevRev CLI](https://developer.devrev.ai/snapin-development/references/cli-install),
+`jq`, and `ngrok` if using local deployment. From `code`, run `npm run deploy` and
+choose local or Lambda deployment. After installing the snap-in, open DevRev
+AirSync, create the regional connection, select an account and import.
 
-These values will be used as defaults when the scripts prompt you for credentials.
+Before production use, validate with a test account:
 
-The connector uses `@devrev/airsync-sdk`. Its local test server sets
-`AIRSYNC_LOCAL_DEVELOPMENT=1` to enable local logging and artifact copies.
+1. Confirm the keyring accepts a valid user key and rejects an invalid key.
+2. Confirm account discovery lists only accounts available to that user.
+3. Import known open and closed issues and inspect links, priority and stage.
+4. Exercise a multi-page import and a subsequent sync after an issue changes.
+5. Confirm US/EU deployment behavior and workspace mapping compatibility.
 
-## Deploy
-
-Run the deployment script:
-
-```sh
-npm run deploy
-```
-
-The script will prompt you for:
-
-1. **Deployment mode**: Local (ngrok) or Lambda
-2. **Organization**: Your DevRev org slug (defaults to `.env` value if set)
-3. **Email**: Your DevRev email (defaults to `.env` value if set)
-
-## Cleanup
-
-Remove all snap-in packages and versions from your organization:
-
-```sh
-npm run cleanup
-```
-
-The script will prompt you for organization and email credentials.
-
-## Start an Import
-
-After deploying, go to DevRev UI: `AirSync` > `Start AirSync` > `<your snap-in>`
+Live New Relic/DevRev validation requires credentials and is not covered by the
+mocked test suite. No deployment is performed by the tests.
