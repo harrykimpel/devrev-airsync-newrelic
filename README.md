@@ -38,11 +38,23 @@ it disables redirects and strips Axios request details from reported errors.
 
 IDs include both the account ID and source issue ID. No owners or creators are
 fabricated from source data. The initial domain mapping asks the installer to
-select an applicable DevRev product and one or more DevRev issue owners. New Relic
-alert issues have no user ownership field, so the selected DevRev users supply
-the required issue owners. Missing priorities fall back to P2; missing states
+select an applicable DevRev product, one or more DevRev issue owners, and a
+DevRev user for **Created by**. The alert payload used by this connector does not
+provide a human creator or owner. Selected DevRev users provide issue ownership
+and explicit attribution for these automated records. Missing priorities fall back to P2; missing states
 fall back to the `in_development` stage. Review these defaults and the priority
 and stage mappings for your workspace before starting an import.
+
+If an import reports "Failed to map the creator ... using the default user as a
+fallback", the issue was imported with DevRev's default creator. Select a DevRev
+user in the import's **Created by** mapping to provide explicit attribution;
+this does not identify a human who created the alert in New Relic. The creator
+picker uses one DevRev user, separately from the collection of issue owners.
+
+Updated bundled mappings do not automatically rewrite an existing import's
+selected recipe or existing issue creators. Review the existing import's mapping
+choices after upgrading the snap-in, and validate creator attribution on newly
+imported issues. A fresh test import is another way to verify the new defaults.
 
 ## Extraction and limits
 
