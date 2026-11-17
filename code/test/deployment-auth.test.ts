@@ -33,6 +33,13 @@ if (args[0] === 'profiles' && args[1] === 'authenticate' && args.includes('--hel
   console.log('Flags:\\n  --expiry int\\n  --env-var-token string\\nGlobal Flags:\\n  --org string\\n  --usr string' + (selector ? '\\n  ' + selector + ' string  Environment' : ''));
   process.exit(0);
 }
+if (args[0] === 'profiles' && args[1] === 'set-token') {
+  const token = fs.readFileSync(0, 'utf8').trim();
+  // A noisy CLI must not leak its credential output through the helper.
+  console.log(token);
+  if (!token || token !== process.env.DEVREV_TOKEN) process.exit(2);
+  process.exit(process.env.DEVREV_TEST_AUTH_FAIL === '1' ? 1 : 0);
+}
 if (args[0] === 'profiles' && args[1] === 'get-token') {
   console.log(process.env.DEVREV_TEST_EXPIRY || '2000-01-01 00:00:00 +0000 UTC');
   process.exit(0);
@@ -45,6 +52,7 @@ if (args[0] === 'profiles' && args[1] === 'authenticate') {
   process.exit(process.env.DEVREV_TEST_AUTH_FAIL === '1' ? 1 : 0);
 }
 if (args[0] === 'snap_in_package' && args[1] === 'list') {
+  if (process.env.DEVREV_TEST_VALIDATE_FAIL === '1') process.exit(1);
   console.log('[]');
   process.exit(0);
 }
@@ -59,8 +67,8 @@ process.exit(2);
 
 afterEach(() => rmSync(project, { recursive: true, force: true }));
 
-function run(script: string, options: { environment?: string; authFails?: boolean; tokenExpiry?: string; envFlag?: string } = {}) {
-  const { environment = 'prod', authFails = false, tokenExpiry = '', envFlag = '' } = options;
+function run(script: string, options: { environment?: string; authFails?: boolean; tokenExpiry?: string; envFlag?: string; providedToken?: string; codespaces?: boolean; validationFails?: boolean } = {}) {
+  const { environment = 'prod', authFails = false, tokenExpiry = '', envFlag = '', providedToken = '', codespaces = false, validationFails = false } = options;
   writeFileSync(join(project, 'code/.env'), `DEV_ORG=test-org\nUSER_EMAIL=developer@example.com\nENV=${environment}\n`);
   const log = join(project, 'cli-calls.jsonl');
   const result = spawnSync('bash', [join(project, 'code/scripts', script)], {
@@ -76,6 +84,9 @@ function run(script: string, options: { environment?: string; authFails?: boolea
       DEVREV_TEST_AUTH_FAIL: authFails ? '1' : '0',
       DEVREV_TEST_EXPIRY: tokenExpiry,
       DEVREV_TEST_ENV_FLAG: envFlag,
+      DEVREV_TOKEN: providedToken,
+      CODESPACES: codespaces ? 'true' : '',
+      DEVREV_TEST_VALIDATE_FAIL: validationFails ? '1' : '0',
     },
   });
   expect(result.error).toBeUndefined();
@@ -127,6 +138,49 @@ describe.each(['deploy.sh', 'cleanup.sh'])('%s authentication', (script) => {
     const result = run(script, { environment: 'qa' });
     expect(result.status).toBe(1);
     expect(result.calls).toEqual([['profiles', 'authenticate', '--help']]);
+  });
+
+  test.each(['0001-01-01 00:00:00 +0000 UTC', 'unavailable'])('validates the saved token when expiry metadata is %s', (tokenExpiry) => {
+    const result = run(script, { tokenExpiry, codespaces: true });
+    expect(result.calls).toContainEqual(['snap_in_package', 'list', '--org', 'test-org', '--usr', 'developer@example.com', '--first-n', '1']);
+    expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(false);
+    expect(result.stdout).toContain('Authenticated with the saved token');
+    expect(result.status).toBe(script === 'deploy.sh' ? 1 : 0);
+  });
+
+  test('fails a saved-token validation error without browser login or writes', () => {
+    const result = run(script, { tokenExpiry: '0001-01-01 00:00:00 +0000 UTC', validationFails: true });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('Could not validate the saved token');
+    expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(false);
+    expect(result.calls.some((args) => args.includes('create-one') || args.includes('delete-one'))).toBe(false);
+  });
+
+  test('imports an explicit PAT through stdin and validates access without expiry lookup or browser login', () => {
+    const providedToken = 'synthetic-devrev-pat';
+    const result = run(script, { providedToken, codespaces: true });
+    expect(result.calls).toContainEqual(['profiles', 'set-token', '--org', 'test-org', '--usr', 'developer@example.com']);
+    expect(result.calls).toContainEqual(['snap_in_package', 'list', '--org', 'test-org', '--usr', 'developer@example.com', '--first-n', '1']);
+    expect(result.calls.some((args) => args[1] === 'get-token' || (args[1] === 'authenticate' && !args.includes('--help')))).toBe(false);
+    expect(JSON.stringify(result.calls) + result.stdout + result.stderr).not.toContain(providedToken);
+    expect(result.stdout).toContain('Authenticated with DEVREV_TOKEN');
+    expect(result.status).toBe(script === 'deploy.sh' ? 1 : 0);
+  });
+
+  test.each([true, false])('does not fall back to a browser when explicit PAT authentication fails (import failure: %s)', (authFails) => {
+    const result = run(script, { providedToken: 'synthetic-devrev-pat', authFails, validationFails: !authFails });
+    expect(result.status).toBe(1);
+    expect(result.calls.some((args) => args[1] === 'get-token' || (args[1] === 'authenticate' && !args.includes('--help')))).toBe(false);
+    expect(result.calls.some((args) => args.includes('create-one') || args.includes('delete-one'))).toBe(false);
+  });
+
+  test('does not open a browser in Codespaces when no usable saved token is available', () => {
+    const result = run(script, { codespaces: true });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('No usable saved token');
+    expect(result.stdout).toContain('DEVREV_TOKEN');
+    expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(false);
+    expect(result.calls.some((args) => args[0] === 'snap_in_package')).toBe(false);
   });
 
   test.each(['--env', '-e'])('uses the legacy %s environment selector only when advertised', (envFlag) => {

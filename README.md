@@ -118,6 +118,22 @@ See the [DevRev authentication guide](https://developer.devrev.ai/snapin-develop
 After installing the snap-in, open DevRev AirSync, create the regional connection,
 select an account and import.
 
+For **GitHub Codespaces or CI**, provide a DevRev PAT as the `DEVREV_TOKEN`
+environment variable (for example, a Codespaces secret). This is separate from
+the New Relic user API key. Alternatively, import a PAT into the CLI profile with
+`devrev profiles set-token --org your-org-slug --usr you@example.com` (the command
+reads the token from stdin). Create the PAT in the target DevRev organization
+under Settings > Account > Personal Access Token.
+
+Deployment and cleanup import an explicit `DEVREV_TOKEN` into the selected
+profile via stdin, then validate access with a read-only snap-in package query.
+They never fall back to browser login when that explicit token fails. Some CLI
+versions report manually imported PAT expiry as `0001-01-01 00:00:00 +0000 UTC`;
+the scripts validate the saved token with the same read-only query rather than
+assuming the zero timestamp means expired. If no usable token exists in
+Codespaces, the scripts stop with instructions instead of opening a terminal
+browser. Tokens are not printed or passed as command-line arguments.
+
 Before production use, validate with a test account:
 
 1. Confirm the keyring accepts a valid user key and rejects an invalid key.
