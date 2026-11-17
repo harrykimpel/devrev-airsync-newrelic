@@ -1,79 +1,37 @@
 import { processExtractionTask } from '@devrev/airsync-sdk';
 
-import { normalizeAttachment, normalizeTodo, normalizeUser } from '../../external-system/data-normalization';
-import { HttpClient } from '../../external-system/http-client';
+import { normalizeIssue } from '../../external-system/data-normalization';
+import { HttpClient, NewRelicApiError } from '../../external-system/http-client';
+import { NewRelicIssue } from '../../external-system/types';
 import { ExtractorState } from '../index';
-import { ExternalTodo, ExternalUser, ExternalAttachment } from '../../external-system/types';
-
-// TODO: Replace with actual repos that will be used to store the
-// data extracted from the external system. For example, you might want to
-// create repos for todos, users, and attachments. Also replace and modify
-// the normalization functions which are used to normalize the data.
-const repos = [
-  {
-    itemType: 'todos',
-    normalize: (item: object) => normalizeTodo(item as ExternalTodo),
-  },
-  {
-    itemType: 'users',
-    normalize: (item: object) => normalizeUser(item as ExternalUser),
-  },
-  {
-    itemType: 'attachments',
-    normalize: (item: object) => normalizeAttachment(item as ExternalAttachment),
-  },
-];
-
-// TODO: Replace with item types you want to extract from the external system.
-// Also replace the extract functions with the actual functions that will be
-// used to extract the data. You can use this to easier iterate over the item
-// types and extract them.
-interface ItemTypeToExtract {
-  name: 'todos' | 'users' | 'attachments';
-  extractFunction: (client: HttpClient) => Promise<object[]>;
-}
-
-const itemTypesToExtract: ItemTypeToExtract[] = [
-  {
-    name: 'todos',
-    extractFunction: (client: HttpClient) => client.getTodos(),
-  },
-  {
-    name: 'users',
-    extractFunction: (client: HttpClient) => client.getUsers(),
-  },
-  {
-    name: 'attachments',
-    extractFunction: (client: HttpClient) => client.getAttachments(),
-  },
-];
 
 processExtractionTask<ExtractorState>({
   task: async ({ adapter }) => {
-    adapter.initializeRepos(repos);
-
-    // TODO: Replace with the HTTP client that will be used to make API calls
-    // to the external system.
-    const httpClient = new HttpClient(adapter.event);
-
-    // TODO: Replace with your implementation to extract data from the external
-    // system. This is just an example how you can iterate over the item types,
-    // extract them, push them to the repo, and save the state.
-    for (const itemTypeToExtract of itemTypesToExtract) {
-      if (adapter.isTimeout) {
-        return { status: 'progress' };
-      }
-
-      if (!adapter.shouldExtract(itemTypeToExtract.name)) {
-        adapter.state[itemTypeToExtract.name].completed = true;
-        continue;
-      }
-
-      const items = await itemTypeToExtract.extractFunction(httpClient);
-      await adapter.getRepo(itemTypeToExtract.name)?.push(items);
-      adapter.state[itemTypeToExtract.name].completed = true;
+    const client = new HttpClient(adapter.event);
+    const accountId = adapter.event.payload.event_context.external_sync_unit_id;
+    adapter.initializeRepos([{ itemType: 'issues', normalize: (item: object) => normalizeIssue(item as NewRelicIssue, accountId, client.region) }]);
+    const state = adapter.state.issues;
+    if (state.completed || !adapter.shouldExtract('issues')) return { status: 'success' };
+    if (adapter.isTimeout) return { status: 'progress' };
+    // Freeze the query window across continuations. Initial imports cover 30 days;
+    // subsequent runs use AirSync's extract_from (with a small overlap).
+    state.end ??= Date.now();
+    const extractFrom = adapter.event.payload.event_context.extract_from;
+    state.start ??= extractFrom ? Date.parse(extractFrom) - 60000 : state.end - 30 * 86400000;
+    if (!Number.isFinite(state.start) || state.start < 0 || state.start >= state.end) {
+      return { status: 'error', error: { message: 'Invalid extraction time window.' } };
     }
-
-    return { status: 'success' };
+    try {
+      const page = await client.getIssues(accountId, state.start, state.end, state.cursor);
+      await adapter.getRepo('issues')!.push(page.issues);
+      state.cursor = page.nextCursor || undefined;
+      state.completed = !state.cursor;
+      return { status: state.completed ? 'success' : 'progress' };
+    } catch (error) {
+      if (error instanceof NewRelicApiError && error.delaySeconds !== undefined) {
+        return { status: 'delay', delaySeconds: error.delaySeconds };
+      }
+      throw error;
+    }
   },
 });

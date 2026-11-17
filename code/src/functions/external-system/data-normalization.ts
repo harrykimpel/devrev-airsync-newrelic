@@ -1,57 +1,29 @@
-import { ExternalSyncUnit, NormalizedAttachment, NormalizedItem } from '@devrev/airsync-sdk';
-import { ExternalAttachment, ExternalTodo, ExternalTodoList, ExternalUser } from './types';
+import { ExternalSyncUnit, NormalizedItem } from '@devrev/airsync-sdk';
 
-// TODO: Replace with your actual normalization functions that will be used to
-// normalize the data received from the external system. You can modify the
-// normalization functions to suit your needs. For example, you might want to
-// include additional fields or change the structure of the normalized item.
-export function normalizeTodoList(item: ExternalTodoList): ExternalSyncUnit {
+import { NewRelicAccount, NewRelicIssue } from './types';
+
+export function normalizeAccount(account: NewRelicAccount): ExternalSyncUnit {
   return {
-    id: item.id,
-    name: item.name,
-    description: item.description,
-    item_count: item.item_count,
-    item_type: item.item_type,
+    id: String(account.id),
+    name: account.name,
+    description: `New Relic account ${account.id}: alert issues`,
+    item_type: 'issues',
   };
 }
 
-export function normalizeTodo(item: ExternalTodo): NormalizedItem {
-  // createItemUrl function returns the url that points to this item in the external system.
-  // TODO: Adjust this function to your external system.
-  const createItemUrl = (id: string) => `https://external-system.com/todos/${id}`;
-
+export function normalizeIssue(issue: NewRelicIssue, accountId: string, region: 'US' | 'EU'): NormalizedItem {
+  const host = region === 'EU' ? 'one.eu.newrelic.com' : 'one.newrelic.com';
   return {
-    id: item.id,
-    created_date: item.created_date,
-    modified_date: item.modified_date,
+    id: `${accountId}:${issue.issueId}`,
+    created_date: new Date(issue.createdAt).toISOString(),
+    modified_date: new Date(issue.updatedAt).toISOString(),
     data: {
-      body: item.body,
-      creator: item.creator,
-      owner: item.owner,
-      title: item.title,
-      item_url_field: createItemUrl(item.id), // Url that points to the item in the external system.
+      title: issue.title?.join('; ') || `New Relic issue ${issue.issueId}`,
+      body: [issue.description?.join('\n'), `State: ${issue.state}`, `Priority: ${issue.priority}`,
+        issue.entityNames?.length ? `Entities: ${issue.entityNames.join(', ')}` : undefined].filter(Boolean).join('\n\n'),
+      priority: issue.priority,
+      state: issue.state,
+      item_url_field: issue.deepLinkUrl || `https://${host}/redirect/issue/${encodeURIComponent(issue.issueId)}?accountId=${accountId}`,
     },
-  };
-}
-
-export function normalizeUser(item: ExternalUser): NormalizedItem {
-  return {
-    id: item.id,
-    created_date: item.created_date,
-    modified_date: item.modified_date,
-    data: {
-      email: item.email,
-      name: item.name,
-    },
-  };
-}
-
-export function normalizeAttachment(item: ExternalAttachment): NormalizedAttachment {
-  return {
-    url: item.url,
-    id: item.id,
-    file_name: item.file_name,
-    author_id: item.author_id,
-    parent_id: item.parent_id,
   };
 }

@@ -1,39 +1,13 @@
-import {
-  AirSyncDefaultItemTypes,
-  ExternalSyncUnit,
-  processExtractionTask,
-} from '@devrev/airsync-sdk';
+import { AirSyncDefaultItemTypes, processExtractionTask } from '@devrev/airsync-sdk';
 
-import { normalizeTodoList } from '../../external-system/data-normalization';
+import { normalizeAccount } from '../../external-system/data-normalization';
 import { HttpClient } from '../../external-system/http-client';
 
 processExtractionTask({
   task: async ({ adapter }) => {
-    adapter.initializeRepos([
-      {
-        itemType: AirSyncDefaultItemTypes.EXTERNAL_SYNC_UNITS,
-        overriddenOptions: {
-          batchSize: 25000,
-        },
-      },
-    ]);
-
-    // TODO: Replace with HTTP client that will be used to make API calls
-    // to the external system.
-    const httpClient = new HttpClient(adapter.event);
-
-    // TODO: Replace with actual API call to fetch external sync units.
-    const todoLists = await httpClient.getTodoLists();
-
-    // TODO: Normalize the data received from the API call to match the
-    // ExternalSyncUnit interface. Modify the normalization function to suit
-    // your needs.
-    const externalSyncUnits: ExternalSyncUnit[] = todoLists.map((todoList) => normalizeTodoList(todoList));
-
-    await adapter
-      .getRepo(AirSyncDefaultItemTypes.EXTERNAL_SYNC_UNITS)
-      ?.push(externalSyncUnits);
-
+    adapter.initializeRepos([{ itemType: AirSyncDefaultItemTypes.EXTERNAL_SYNC_UNITS }]);
+    const accounts = await new HttpClient(adapter.event).getAccounts();
+    await adapter.getRepo(AirSyncDefaultItemTypes.EXTERNAL_SYNC_UNITS)!.push(accounts.map(normalizeAccount));
     return { status: 'success' };
   },
 });
