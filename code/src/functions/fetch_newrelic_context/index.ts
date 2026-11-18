@@ -8,6 +8,7 @@ import { NewRelicIssue } from '../external-system/types';
 import { AnalysisError, analysisPrompt, configuredAgent, RESPONSE_SOURCE, Snapshot, startAnalysis } from './analysis';
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
 import { handoffGitHub } from './github-handoff';
+import { handoffCoding } from './coding-handoff';
 
 interface ContextEvent {
   payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
@@ -59,7 +60,7 @@ function validateEvent(input: unknown): ContextEvent {
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
-  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github'].includes(event.payload.action.value)) {
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding', 'coding_status'].includes(event.payload.action.value)) {
     throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
   }
   return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
@@ -122,7 +123,8 @@ async function collectSnapshot(newrelic: HttpClient, accountId: string, issue: N
 async function handleEvent(input: unknown) {
   const event = validateEvent(input);
   console.info('[newrelic-context] fetch:validated');
-  const key = event.payload.action.value === 'github' ? '' : await contextKey(event);
+  const handoff = ['github', 'coding', 'coding_status'].includes(event.payload.action.value);
+  const key = handoff ? '' : await contextKey(event);
   if (key) console.info('[newrelic-context] connection:ready');
   const actorToken = event.context.secrets.actor_session_token;
   // Authorize the issue as the clicking user before any telemetry or bot writes.
@@ -142,7 +144,7 @@ async function handleEvent(input: unknown) {
   const evidenceOnly = ['evidence', 'recent_evidence'].includes(event.payload.action.value);
   const github = event.payload.action.value === 'github';
   const mode = ['recent', 'recent_evidence'].includes(event.payload.action.value) ? 'recent' : 'alert';
-  const agentId = evidenceOnly || github ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
+  const agentId = evidenceOnly || handoff ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
   const eventSource = event.input_data?.event_sources?.[RESPONSE_SOURCE];
   const serviceToken = event.context.secrets.service_account_token;
   const serviceAccountId = event.context.service_account_id;
@@ -155,6 +157,16 @@ async function handleEvent(input: unknown) {
       snapInId: event.context.snap_in_id, issue: work, sourceUrl, requestHash,
       agentValue: event.input_data?.global_values?.github_issue_agent_id,
       repositoryValue: event.input_data?.global_values?.github_issue_repository });
+  }
+  if (handoff) {
+    const globals = event.input_data?.global_values;
+    return handoffCoding({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
+      serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
+      snapInId: event.context.snap_in_id, issue: work, sourceUrl, requestHash,
+      operation: event.payload.action.value === 'coding' ? 'start' : 'status',
+      agentValue: globals?.coding_agent_id || globals?.github_issue_agent_id,
+      repositoryValue: globals?.github_issue_repository, providerValue: globals?.coding_agent_provider,
+      baseBranchValue: globals?.coding_agent_base_branch });
   }
   const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
   const issue = await newrelic.getIssue(source.accountId, source.issueId, Date.parse(work.created_date ?? ''));

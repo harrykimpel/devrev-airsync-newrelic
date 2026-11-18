@@ -66,6 +66,26 @@
               "text": { "type": "plain_text", "text": "Create GitHub issue" }
             }
           ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "coding",
+              "text": { "type": "plain_text", "text": "Start coding agent" }
+            },
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "coding_status",
+              "text": { "type": "plain_text", "text": "Check coding progress" }
+            }
+          ]
         }
       ]
     }
