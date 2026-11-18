@@ -34,7 +34,9 @@ version_ids_in_output() {
 
 preserve_created_package() {
     echo "Package retained for inspection: $SIP_ID"
-    echo "Inspect its versions: devrev snap_in_version list --package '$SIP_ID' --all --org '$DEV_ORG' --usr '$USER_EMAIL'"
+    printf 'Inspect its versions:'
+    printf ' %q' devrev snap_in_version list --package "$SIP_ID" --all "${DEVREV_ENV_ARGS[@]}" --org "$DEV_ORG" --usr "$USER_EMAIL"
+    printf '\n'
 }
 
 recover_created_version() {
