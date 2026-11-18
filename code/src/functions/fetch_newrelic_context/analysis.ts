@@ -90,7 +90,7 @@ export function analysisReference(binding: Binding): string {
 }
 
 const failureBody = (sourceUrl: string, github = false) => (github
-  ? '## GitHub issue request unavailable\n\nThe agent did not return a validated GitHub issue result. Check its GitHub MCP access and search for an existing issue before retrying.'
+  ? '## GitHub issue request unavailable\n\nThe agent did not return a validated GitHub issue result. The issue may already exist. Check the agent’s final reply and search GitHub before retrying.'
   : '## New Relic analysis unavailable\n\nThe agent analysis could not be completed. Retry the analysis or use an evidence button to inspect the telemetry.') + '\n\n[Open source alert](<' + sourceUrl + '>)';
 
 interface StartOptions {

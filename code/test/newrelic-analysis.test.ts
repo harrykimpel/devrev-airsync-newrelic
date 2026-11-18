@@ -1,4 +1,6 @@
 import { client } from '@devrev/typescript-sdk';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 import fetchContext from '../src/functions/fetch_newrelic_context';
 import complete from '../src/functions/complete_newrelic_analysis';
@@ -257,6 +259,17 @@ test.each(['created', 'existing'])('posts a validated GitHub URL when the agent 
   expect(comment.body).toContain(status === 'created' ? 'Agent reported: created' : 'Agent reported: found existing');
   await complete([response('message', JSON.stringify({ status, url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 }))]);
   expect(bot.timelineEntriesUpdate).toHaveBeenCalledTimes(1);
+});
+
+test('completes the internal result comment using the actual prose-prefixed, Markdown-linked agent reply', async () => {
+  await fetchContext([click('github')]);
+  const message = readFileSync(join(__dirname, 'fixtures/github-agent-reply.txt'), 'utf8');
+  await complete([response('message', message)]);
+  expect(comment.body).toContain('[GitHub issue #165](<https://github.com/' + repository + '/issues/165>)');
+  expect(comment.body).not.toContain('request unavailable');
+  expect(comment.body).not.toContain('Issue verified.');
+  expect(bot.timelineEntriesUpdate).toHaveBeenCalledTimes(1);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
 });
 
 test.each(['no analysis', 'pending', 'raw evidence', 'other author', 'external', 'wrong issue', 'failure notice'])('does not create a GitHub request from %s', async (failure) => {

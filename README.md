@@ -107,6 +107,9 @@ Only a structured `created`/`existing` report with a matching issue number and
 HTTPS GitHub issue URL in that repository becomes a linked result. This validates
 the agent's report; real tool execution and search-first duplicate avoidance must
 be verified in the target agent/MCP setup. Search and create are not atomic.
+The parser accepts prose/code fences around one JSON report and Markdown links
+in its URL field, then validates the link destination. Ambiguous multiple reports
+and mismatched repositories or issue numbers are rejected.
 
 For analysis, follow the [New Relic Incident Analyst setup guide](docs/NEW_RELIC_INCIDENT_ANALYST.md)
 for the copy-paste goal, instructions, Playground checks and connector settings.

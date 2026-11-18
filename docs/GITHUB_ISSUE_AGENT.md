@@ -79,7 +79,8 @@ Read the created issue to verify its number, URL and marker. A draft, form,
 pending approval or tool error is not a created issue. If a create call has an
 uncertain outcome, search again before any retry. Never invent a success URL.
 
-For connector requests, return only JSON, with no Markdown explanation:
+For connector requests, return one JSON object, with no Markdown explanation.
+The url field must be a plain HTTPS URL string, not a Markdown link or autolink:
 {"status":"created","url":"https://github.com/harrykimpel/O11yParty-Buzzer/issues/123","issue_number":123}
 or the same shape with status existing. The number and URL must come from the
 verified tool result; 123 above is only an example. On failure, return:
@@ -110,6 +111,19 @@ The agent's GitHub result replaces a separate pending internal comment. The
 callback accepts only a correctly bound result with a matching issue URL and
 number in the configured repository; other results become a failure notice.
 The connector validates the agent's report, not its actual MCP execution trace.
+
+The result parser accepts introductory/trailing prose or code fences around one
+JSON object and unwraps Markdown links or autolinks in its `url` field before
+checking the destination. Multiple JSON objects, unsupported statuses, mismatched
+issue numbers and URLs outside the configured repository remain rejected. A URL
+mentioned only in prose is not a structured success result.
+
+If GitHub creation succeeds but the internal discussion says the request is
+unavailable, inspect the agent's final reply in **Observe → Sessions**. Versions
+before 1.3.1 rejected introductory prose and Markdown-formatted URL values.
+Upgrade the existing snap-in and, if needed, repeat the handoff so the agent can
+find and return the existing issue by its marker. Upgrading does not rewrite
+the old failure comment. Inspect GitHub before retrying an unknown outcome.
 
 The source incident marker is stable across analysis refreshes. Searching for
 that marker helps avoid duplicates from later requests, but search and create
