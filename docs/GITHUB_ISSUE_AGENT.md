@@ -1,6 +1,6 @@
 # O11yParty GitHub Issue Agent
 
-This agent turns a completed **New Relic Incident Analyst** brief into a GitHub
+This agent turns a completed [New Relic Incident Analyst](NEW_RELIC_INCIDENT_ANALYST.md) brief into a GitHub
 issue in **harrykimpel/O11yParty-Buzzer**. It runs only when a user clicks
 **Create GitHub issue** on a DevRev issue. Completing telemetry analysis does not
 automatically publish anything to GitHub.
