@@ -12,9 +12,40 @@ success() { echo -e "${GREEN}SUCCESS: $1${NC}"; }
 # DevRev CLI output can mix build logs, ANSI escapes and JSON API responses.
 # Some CLI releases return zero even for an API error, so inspect JSON as well.
 devrev_json_objects() {
-    jq -Rs 'gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") as $output |
-        (try ($output | fromjson) catch ($output | split("\n")[] | fromjson?)) |
-        (if type == "array" then .[] else . end) | select(type == "object")'
+    node -e '
+const output = require("fs").readFileSync(0, "utf8").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+function emit(value) {
+    for (const item of Array.isArray(value) ? value : [value]) {
+        if (item && typeof item === "object" && !Array.isArray(item)) console.log(JSON.stringify(item));
+    }
+}
+try { emit(JSON.parse(output)); process.exit(0); } catch { /* Mixed build/script output. */ }
+let buffer = "", stack = [], quoted = false, escaped = false;
+for (const line of output.split("\n")) {
+    if (!stack.length && !/^\s*[\[{]/.test(line)) continue;
+    for (const character of line + "\n") {
+        if (!stack.length) {
+            if (character !== "{" && character !== "[") continue;
+            buffer = character; stack.push(character); quoted = false; escaped = false;
+            continue;
+        }
+        buffer += character;
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === "\"") quoted = false;
+        } else if (character === "\"") quoted = true;
+        else if (character === "{" || character === "[") stack.push(character);
+        else if (character === "}" || character === "]") {
+            if (stack.pop() !== (character === "}" ? "{" : "[")) { stack = []; buffer = ""; break; }
+            if (!stack.length) {
+                try { emit(JSON.parse(buffer)); } catch { /* Ordinary log text. */ }
+                buffer = "";
+            }
+        }
+    }
+}
+'
 }
 
 devrev_output_has_error() {

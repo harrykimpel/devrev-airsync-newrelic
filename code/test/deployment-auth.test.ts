@@ -41,7 +41,7 @@ if (args[0] === 'profiles' && args[1] === 'set-token') {
   process.exit(process.env.DEVREV_TEST_AUTH_FAIL === '1' ? 1 : 0);
 }
 if (args[0] === 'profiles' && args[1] === 'get-token') {
-  console.log(process.env.DEVREV_TEST_EXPIRY || '2000-01-01 00:00:00 +0000 UTC');
+  process.stdout.write(process.env.DEVREV_TEST_EXPIRY ?? '2000-01-01 00:00:00 +0000 UTC');
   process.exit(0);
 }
 if (args[0] === 'profiles' && args[1] === 'authenticate') {
@@ -68,7 +68,7 @@ process.exit(2);
 afterEach(() => rmSync(project, { recursive: true, force: true }));
 
 function run(script: string, options: { environment?: string; authFails?: boolean; tokenExpiry?: string; envFlag?: string; providedToken?: string; codespaces?: boolean; validationFails?: boolean } = {}) {
-  const { environment = 'prod', authFails = false, tokenExpiry = '', envFlag = '', providedToken = '', codespaces = false, validationFails = false } = options;
+  const { environment = 'prod', authFails = false, tokenExpiry = '2000-01-01 00:00:00 +0000 UTC', envFlag = '', providedToken = '', codespaces = false, validationFails = false } = options;
   writeFileSync(join(project, 'code/.env'), `DEV_ORG=test-org\nUSER_EMAIL=developer@example.com\nENV=${environment}\n`);
   const log = join(project, 'cli-calls.jsonl');
   const result = spawnSync('bash', [join(project, 'code/scripts', script)], {
@@ -140,12 +140,25 @@ describe.each(['deploy.sh', 'cleanup.sh'])('%s authentication', (script) => {
     expect(result.calls).toEqual([['profiles', 'authenticate', '--help']]);
   });
 
-  test.each(['0001-01-01 00:00:00 +0000 UTC', 'unavailable'])('validates the saved token when expiry metadata is %s', (tokenExpiry) => {
+  test.each(['0001-01-01 00:00:00 +0000 UTC', 'unavailable', ''])('validates the saved token when expiry metadata is %s', (tokenExpiry) => {
     const result = run(script, { tokenExpiry, codespaces: true });
     expect(result.calls).toContainEqual(['snap_in_package', 'list', '--org', 'test-org', '--usr', 'developer@example.com', '--first-n', '1']);
     expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(false);
     expect(result.stdout).toContain('Authenticated with the saved token');
     expect(result.status).toBe(script === 'deploy.sh' ? 1 : 0);
+  });
+
+  test.each([false, true])('validates empty expiry metadata before considering browser login (Codespaces: %s)', (codespaces) => {
+    const result = run(script, { tokenExpiry: '', codespaces });
+    expect(result.stdout).toContain('Authenticated with the saved token');
+    expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(false);
+  });
+
+  test.each([false, true])('handles missing local credentials after an empty expiry and failed read (Codespaces: %s)', (codespaces) => {
+    const result = run(script, { tokenExpiry: '', validationFails: true, codespaces });
+    expect(result.calls).toContainEqual(['snap_in_package', 'list', '--org', 'test-org', '--usr', 'developer@example.com', '--first-n', '1']);
+    expect(result.calls.some((args) => args[1] === 'authenticate' && !args.includes('--help'))).toBe(!codespaces);
+    if (codespaces) expect(result.stdout).toContain('No usable saved token');
   });
 
   test('fails a saved-token validation error without browser login or writes', () => {

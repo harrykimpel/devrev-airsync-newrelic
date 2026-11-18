@@ -61,24 +61,29 @@ authenticate_devrev() {
 
     if [ -n "$expiry_epoch" ] && [ "$expiry_epoch" -gt "$(date +%s)" ]; then
         success "Already authenticated as $user_email into $organization ($environment) — token valid until $expiry_raw"
-    elif [[ "$expiry_raw" == 0001-01-01* ]] || { [ -n "$expiry_raw" ] && [ -z "$expiry_epoch" ]; }; then
+        return 0
+    fi
+    if [[ "$expiry_raw" == 0001-01-01* ]] || [ -z "$expiry_epoch" ]; then
         # Manually imported PATs can have Go's zero timestamp rather than an
         # expiry. Unknown metadata is not proof of an expired credential.
-        if ! devrev snap_in_package list "${environment_args[@]}" --org "$organization" --usr "$user_email" --first-n 1 >/dev/null 2>&1; then
+        if devrev snap_in_package list "${environment_args[@]}" --org "$organization" --usr "$user_email" --first-n 1 >/dev/null 2>&1; then
+            success "Authenticated with the saved token for $organization ($environment); expiry metadata is unavailable"
+            return 0
+        elif [ -n "$expiry_raw" ]; then
             error "Could not validate the saved token for $organization. Check the PAT, CLI profile, network and snap-in permissions. Browser login was not attempted."
             return 1
         fi
-        success "Authenticated with the saved token for $organization ($environment); expiry metadata is unavailable"
-    else
-        if [ "${CODESPACES:-}" = "true" ]; then
-            error "No usable saved token was found. In Codespaces, set DEVREV_TOKEN to a DevRev PAT or use 'devrev profiles set-token --org $organization --usr $user_email'. Browser login was not attempted."
-            return 1
-        fi
-        echo "Authenticating as $user_email into $organization ($environment)..."
-        if ! devrev profiles authenticate "${environment_args[@]}" --usr "$user_email" --org "$organization" --expiry 5; then
-            error "DevRev authentication failed"
-            return 1
-        fi
-        success "Authenticated"
+        # Empty metadata and a failed read can mean no local credential at all.
+        # Retain browser login on desktops, but never open it in Codespaces.
     fi
+    if [ "${CODESPACES:-}" = "true" ]; then
+        error "No usable saved token was found. In Codespaces, set DEVREV_TOKEN to a DevRev PAT or use 'devrev profiles set-token --org $organization --usr $user_email'. Browser login was not attempted."
+        return 1
+    fi
+    echo "Authenticating as $user_email into $organization ($environment)..."
+    if ! devrev profiles authenticate "${environment_args[@]}" --usr "$user_email" --org "$organization" --expiry 5; then
+        error "DevRev authentication failed"
+        return 1
+    fi
+    success "Authenticated"
 }

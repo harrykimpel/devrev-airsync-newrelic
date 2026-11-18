@@ -20,14 +20,14 @@ export function resultObject(message: string): Record<string, unknown> | undefin
     return isObject(parsed) ? parsed : undefined;
   } catch { /* Scan for a single balanced object in a formatted agent reply. */ }
   let start = -1;
-  let depth = 0;
+  const stack: string[] = [];
   let quoted = false;
   let escaped = false;
   let result: Record<string, unknown> | undefined;
   for (let index = 0; index < message.length; index++) {
     const character = message[index];
     if (start < 0) {
-      if (character === '{') { start = index; depth = 1; }
+      if (character === '{' || character === '[') { start = index; stack.push(character); }
       continue;
     }
     if (quoted) {
@@ -35,12 +35,13 @@ export function resultObject(message: string): Record<string, unknown> | undefin
       else if (character === '\\') escaped = true;
       else if (character === '"') quoted = false;
     } else if (character === '"') quoted = true;
-    else if (character === '{') depth++;
-    else if (character === '}') {
-      depth--;
-      if (depth === 0) {
+    else if (character === '{' || character === '[') stack.push(character);
+    else if (character === '}' || character === ']') {
+      if (stack.pop() !== (character === '}' ? '{' : '[')) return undefined;
+      if (stack.length === 0) {
         try {
           const parsed: unknown = JSON.parse(message.slice(start, index + 1));
+          if (Array.isArray(parsed)) return undefined;
           if (isObject(parsed)) {
             if (result) return undefined;
             result = parsed;
@@ -50,7 +51,7 @@ export function resultObject(message: string): Record<string, unknown> | undefin
       }
     }
   }
-  return depth === 0 ? result : undefined;
+  return stack.length === 0 ? result : undefined;
 }
 
 function resultUrl(value: string): string {

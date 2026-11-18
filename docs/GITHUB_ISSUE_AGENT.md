@@ -186,7 +186,7 @@ The connector validates the agent's report, not its actual MCP execution trace.
 The result parser accepts introductory/trailing prose or code fences around one
 JSON object and unwraps Markdown links or autolinks in its `url` field before
 checking the destination. Multiple JSON objects, unsupported statuses, mismatched
-issue numbers and URLs outside the configured repository remain rejected. A URL
+issue numbers, arrays/incomplete containers, and URLs outside the configured repository remain rejected. A URL
 mentioned only in prose is not a structured success result.
 
 If GitHub creation succeeds but the internal discussion says the request is
@@ -199,7 +199,11 @@ the old failure comment. Inspect GitHub before retrying an unknown outcome.
 The source incident marker is stable across analysis refreshes. Searching for
 that marker helps avoid duplicates from later requests, but search and create
 are not atomic and GitHub search indexing may lag. Repeated deliveries of one
-connector click reuse the same pending request. Independent/concurrent clicks
+connector click reuse the same pending request, including concurrent deliveries
+that selected different analysis briefs (1.4.1). The winning source selection is
+stored in a private bot-owned record and checked on callback. An uncertain start
+response leaves the request pending so a later verified callback can still post
+the GitHub link. Independent/concurrent clicks
 can still race, so check GitHub before retrying a request with an unknown outcome.
 
 Creating/publishing the agent is an org setup step; the repository changes do

@@ -34,6 +34,11 @@ test.each([
 });
 
 test.each([
+  '```json\n[' + JSON.stringify(report) + ']\n```',
+  'Result: [\n' + JSON.stringify(report) + '\n]',
+  'Result: [\n' + JSON.stringify(report),
+  '```json\n[' + JSON.stringify(report) + '\n```',
+  JSON.stringify(report) + '\n[',
   '{"status":"error"}\n' + JSON.stringify(report),
   JSON.stringify(report) + '\n{"status":"error"}',
   JSON.stringify(report) + '\n' + JSON.stringify({ ...report, url: url.replace('165', '166'), issue_number: 166 }),

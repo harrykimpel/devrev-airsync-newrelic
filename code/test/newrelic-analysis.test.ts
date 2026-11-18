@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import fetchContext from '../src/functions/fetch_newrelic_context';
 import complete from '../src/functions/complete_newrelic_analysis';
-import { analysisPrompt, PENDING_PREFIX, RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
+import { analysisPrompt, analysisReference, PENDING_PREFIX, RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
 import { planContext } from '../src/functions/fetch_newrelic_context/context';
 import { HttpClient } from '../src/functions/external-system/http-client';
 import { issuePermalink } from '../src/functions/external-system/links';
@@ -27,6 +27,7 @@ const actor = { worksGet: jest.fn(), timelineEntriesCreate: jest.fn(), timelineE
 const bot = { timelineEntriesCreate: jest.fn(), timelineEntriesList: jest.fn(), timelineEntriesGet: jest.fn(), timelineEntriesUpdate: jest.fn() };
 const agent = { aiAgentEventsExecuteAsync: jest.fn() };
 let comment: Record<string, any>;
+let records: Map<string, Record<string, any>>;
 
 function click(value = 'alert') {
   return { payload: { action: { id: 'fetch_newrelic_context', value, timestamp: '2026-11-18T09:35:57.958Z' }, context: { object_id: issueId }, actor_id: 'user-1' },
@@ -43,6 +44,8 @@ function response(type = 'message', message = 'Latency is elevated; inspect the 
 }
 
 beforeEach(() => {
+  comment = {};
+  records = new Map();
   jest.clearAllMocks();
   jest.spyOn(Date, 'now').mockReturnValue(now);
   jest.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -56,10 +59,17 @@ beforeEach(() => {
     type: 'timeline_comment', visibility: 'internal', created_by: { id: serviceAccountId }, created_date: new Date(now - 1000).toISOString(),
     external_ref: 'newrelic-analysis:' + 'a'.repeat(64), body: '## New Relic analysis\n\nCompleted latency analysis. NRAK-secret actor-token bot-token' }] } });
   bot.timelineEntriesCreate.mockImplementation(async (request) => {
+    if (request.visibility === 'private') {
+      if (records.has(request.external_ref)) throw { isAxiosError: true, response: { status: 409 } };
+      const record = { ...request, id: issueId + ':comment/record-' + records.size, created_by: { id: serviceAccountId }, created_date: new Date(now).toISOString() };
+      records.set(request.external_ref, record);
+      return { data: { timeline_entry: record } };
+    }
+    if (comment.external_ref === request.external_ref) throw { isAxiosError: true, response: { status: 409 } };
     comment = { ...request, id: issueId + ':comment/analysis', created_by: { id: serviceAccountId }, created_date: new Date(now).toISOString() };
     return { data: { timeline_entry: comment } };
   });
-  bot.timelineEntriesGet.mockImplementation(async () => ({ data: { timeline_entry: comment } }));
+  bot.timelineEntriesGet.mockImplementation(async ({ external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref) : comment } }));
   bot.timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: [comment] } }));
   bot.timelineEntriesUpdate.mockImplementation(async (request) => { comment = { ...comment, body: request.body }; return { data: { timeline_entry: comment } }; });
   agent.aiAgentEventsExecuteAsync.mockResolvedValue({ data: { session: { id: core + ':ai_agent_session/1' } } });
@@ -161,7 +171,7 @@ test('does not post results when the bound comment cannot be read, and sanitizes
 test('contains start failures without leaking prompts or raw SDK errors', async () => {
   agent.aiAgentEventsExecuteAsync.mockRejectedValue({ config: { headers: { Authorization: 'actor-token' }, data: 'private-nr-key' } });
   await expect(fetchContext([click()])).rejects.toThrow('Could not start');
-  expect(comment.body).toContain('analysis unavailable');
+  expect(comment.body).toContain('analysis requested');
   expect(console.error).toHaveBeenCalledWith('[newrelic-context] fetch:failed code=agent_start_failed');
 });
 
@@ -240,7 +250,7 @@ test('on-demand GitHub handoff reads the completed analysis as the user without 
   expect(actor.timelineEntriesList).toHaveBeenCalledWith(expect.objectContaining({ object: issueId, visibility: ['internal'], limit: 100 }), { timeout: 10000 });
   const request = agent.aiAgentEventsExecuteAsync.mock.calls[0][0];
   expect(request.agent).toBe(githubAgentId);
-  expect(request.client_metadata.connector).toBe('newrelic-github-v1');
+  expect(request.client_metadata.connector).toBe('newrelic-github-v2');
   expect(request.client_metadata.github).toEqual({ repository, analysis_comment_id: issueId + ':comment/source-analysis' });
   const prompt = request.event.input_message.message;
   const data = JSON.parse(prompt.split('\nINPUT\n')[1]);
@@ -306,7 +316,7 @@ test('does not repeat a delivered GitHub click when a newer analysis appears bef
   entries.push(comment);
   await expect(fetchContext([click('github')])).resolves.toMatchObject({ status: 'success' });
   expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
-  expect(bot.timelineEntriesCreate).toHaveBeenCalledTimes(1);
+  expect(bot.timelineEntriesCreate).toHaveBeenCalledTimes(2); // Internal request plus private source-brief binding.
 });
 
 test.each(['repository missing', 'agent missing', 'analysis access denied'])('does not publish a handoff when %s', async (failure) => {
@@ -345,4 +355,107 @@ test('requires matching returned issue numbers and supports fenced JSON from an 
   expect(githubResult('```json\n' + JSON.stringify({ status: 'existing', url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 }) + '\n```', repository)).toContain('found existing');
   expect(githubRepository('https://github.com/' + repository)).toBeUndefined();
   expect(githubRepository('owner/..')).toBeUndefined();
+});
+
+test.each(['alert', 'github'])('allows a successful callback after an uncertain %s start response', async (mode) => {
+  agent.aiAgentEventsExecuteAsync.mockRejectedValueOnce(new Error('transport timeout'));
+  await expect(fetchContext([click(mode)])).rejects.toThrow('Could not start or confirm');
+  expect(comment.body).toContain('requested');
+  expect(bot.timelineEntriesUpdate).not.toHaveBeenCalled();
+  const message = mode === 'github'
+    ? JSON.stringify({ status: 'created', url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 }) : 'Recovered incident brief';
+  await complete([response('message', message)]);
+  expect(comment.body).toContain(mode === 'github' ? 'GitHub issue #42' : 'Recovered incident brief');
+});
+
+test('concurrent success and error callbacks publish the same durable winning result', async () => {
+  await fetchContext([click()]);
+  let release!: () => void;
+  const bothRead = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  const originalGet = bot.timelineEntriesGet.getMockImplementation()!;
+  bot.timelineEntriesGet.mockImplementation(async (request) => {
+    if (request.external_ref) return originalGet(request);
+    const snapshot = { ...comment };
+    if (++reads === 2) release();
+    await bothRead;
+    return { data: { timeline_entry: snapshot } };
+  });
+  await Promise.all([complete([response('message', 'The successful brief wins.')]), complete([response('error', 'late error')])]);
+  expect(comment.body).toContain('The successful brief wins.');
+  expect(bot.timelineEntriesUpdate).toHaveBeenCalledTimes(2);
+  const bodies = bot.timelineEntriesUpdate.mock.calls.map(([request]) => request.body);
+  expect(new Set(bodies).size).toBe(1);
+  expect(records.size).toBe(1);
+});
+
+test('a lost terminal-record create response is reconciled before publishing', async () => {
+  await fetchContext([click()]);
+  const originalCreate = bot.timelineEntriesCreate.getMockImplementation()!;
+  bot.timelineEntriesCreate.mockImplementationOnce(async (request) => {
+    await originalCreate(request);
+    throw new Error('response lost after durable create');
+  });
+  await complete([response('message', 'Recovered persisted result.')]);
+  expect(comment.body).toContain('Recovered persisted result.');
+  expect(records.size).toBe(1);
+});
+
+test('retries a failed discussion update using the persisted winner instead of a later error', async () => {
+  await fetchContext([click()]);
+  bot.timelineEntriesUpdate.mockRejectedValueOnce(new Error('temporary update failure'));
+  await expect(complete([response('message', 'The persisted result.')])).rejects.toThrow();
+  expect(comment.body).toContain('analysis requested');
+  await complete([response('error')]);
+  expect(comment.body).toContain('The persisted result.');
+});
+
+test('overlapping deliveries with different selected briefs reserve one GitHub request', async () => {
+  const entries = (await actor.timelineEntriesList()).data.timeline_entries;
+  actor.timelineEntriesList.mockResolvedValueOnce({ data: { timeline_entries: entries } });
+  actor.timelineEntriesList.mockResolvedValueOnce({ data: { timeline_entries: [{ ...entries[0], id: issueId + ':comment/new-brief' }] } });
+  await Promise.all([fetchContext([click('github')]), fetchContext([click('github')])]);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  const request = agent.aiAgentEventsExecuteAsync.mock.calls[0][0];
+  expect(request.client_metadata.github.analysis_comment_id).toBe(entries[0].id);
+  await complete([response('message', JSON.stringify({ status: 'existing', url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 }))]);
+  expect(comment.body).toContain('GitHub issue #42');
+});
+
+test('continues to accept an in-flight legacy GitHub callback', async () => {
+  await fetchContext([click('github')]);
+  const input = response('message', JSON.stringify({ status: 'existing', url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 }));
+  const metadata = input.payload.ai_agent_response.client_metadata;
+  metadata.connector = 'newrelic-github-v1';
+  comment.external_ref = analysisReference(metadata);
+  input.payload.ai_agent_response.session_object = comment.external_ref;
+  await complete([input]);
+  expect(comment.body).toContain('GitHub issue #42');
+});
+
+test.each(['alert', 'evidence', 'github'])('accepts a display ID and uses the canonical issue DON for %s downstream', async (mode) => {
+  const input = click(mode);
+  input.payload.context.object_id = 'ISS-1';
+  actor.worksGet.mockResolvedValueOnce({ data: { work: { ...work, display_id: 'ISS-1' } } });
+  await fetchContext([input]);
+  expect(actor.worksGet).toHaveBeenCalledWith({ id: 'ISS-1' }, { timeout: 10000 });
+  if (mode === 'evidence') expect(actor.timelineEntriesCreate).toHaveBeenCalledWith(expect.objectContaining({ object: issueId }), { timeout: 10000 });
+  else expect(agent.aiAgentEventsExecuteAsync.mock.calls[0][0].parent).toBe(issueId);
+});
+
+test.each(['author', 'object', 'visibility', 'reference', 'id'])('does not publish a result from a private record with a wrong %s', async (field) => {
+  await fetchContext([click()]);
+  bot.timelineEntriesCreate.mockImplementationOnce(async (request) => {
+    const record = { ...request, id: issueId + ':comment/record', created_by: { id: serviceAccountId } };
+    if (field === 'author') record.created_by = { id: 'other-user' };
+    if (field === 'object') record.object = core + ':issue/2';
+    if (field === 'visibility') record.visibility = 'internal';
+    if (field === 'reference') record.external_ref = 'unrelated';
+    if (field === 'id') record.id = core + ':issue/2:comment/record';
+    records.set(request.external_ref, record);
+    return { data: { timeline_entry: record } };
+  });
+  await expect(complete([response()])).rejects.toThrow('Check the fixed failure code');
+  expect(bot.timelineEntriesUpdate).not.toHaveBeenCalled();
+  expect(comment.body).toContain('analysis requested');
 });

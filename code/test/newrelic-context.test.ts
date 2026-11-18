@@ -376,6 +376,15 @@ test('caps comment content and scrubs credentials, emails and code fences from r
   expect(redact('{"api_key":"secret key", "password":"pw"} cookie=session; mail=a@b.com')).not.toMatch(/secret key|"pw"|session|a@b.com/);
 });
 
+test.each(['Authorization: Basic YWxpY2U6cGFzc3dvcmQ=', 'authorization=basic\tYWxpY2U6cGFzc3dvcmQ=', '{"Authorization":"Basic YWxpY2U6cGFzc3dvcmQ="}'])('removes the complete Basic credential from telemetry: %s', (message) => {
+  expect(redact(message)).not.toContain('YWxpY2U6cGFzc3dvcmQ=');
+  const plan = planContext(issue, 'recent', now);
+  const rendered = renderContext(issuePermalink('123', issue.issueId, 'US'), '123', plan,
+    [{ ...plan.queries[1], rows: [{ message }] }], []);
+  expect(rendered).not.toContain('YWxpY2U6cGFzc3dvcmQ=');
+  expect(rendered).toContain('REDACTED');
+});
+
 test('manifest routes real issue buttons to the exported handler with user credentials and optional scopes', () => {
   const { readFileSync } = require('fs');
   const { join } = require('path');

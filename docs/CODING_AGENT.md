@@ -1,4 +1,4 @@
-# Copilot coding handoff (1.4.0)
+# Copilot coding handoff (1.4.0+)
 
 The workflow is **New Relic analysis → GitHub issue → Start coding agent →
 Copilot's proposed fix PR → Check coding progress**. Each external write is
@@ -117,7 +117,11 @@ test the agent's actual MCP tool behavior in your org.
 
 All Start clicks for the same installation/coordinator/provider/GitHub issue use
 one reserved request, including after an error or timeout. Repeated terminal
-callbacks cannot replace an already completed comment. Progress checks get their
+callbacks cannot replace an already completed comment. In 1.4.1, repository
+casing is normalized in the reservation identity. A timed-out start response
+keeps the internal request pending so a later callback remains eligible. Terminal
+callbacks arbitrate through an immutable private bot-owned result record before
+publishing the winning result to the internal comment. Progress checks get their
 own request and must never assign or create anything. If a Start result is
 uncertain, inspect GitHub or check progress. If progress confirms nothing started,
 correct permissions/instructions and explicitly start Copilot on GitHub; this

@@ -43,6 +43,7 @@ export function redact(text: string, secrets: string[] = []): string {
   return result
     .replace(/\b(?:NRAK|NRII|NRAL)-[A-Za-z0-9_-]+/g, '[REDACTED]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bBasic\s+[A-Za-z0-9+/=_-]+/gi, 'Basic [REDACTED]')
     .replace(/(["']?(?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|secret|cookie|set-cookie)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]')
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[EMAIL REDACTED]');

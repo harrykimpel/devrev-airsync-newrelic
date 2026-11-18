@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { client, publicSDK } from '@devrev/typescript-sdk';
 
 import { parseIssueReference } from '../external-system/links';
-import { AnalysisError, configuredAgent, githubRequestPrefix, startAnalysis } from './analysis';
+import { AnalysisError, analysisReference, configuredAgent, githubRequestPrefix, startAnalysis } from './analysis';
 import { redact } from './context';
 import { githubRepository } from './github-policy';
 
@@ -22,8 +22,11 @@ export async function handoffGitHub(options: {
     .then((result) => result.data.timeline_entries)
     .catch(() => { throw new AnalysisError('analysis_read_failed', 'Could not read the issue’s completed analysis as the requesting user.'); });
   const prefix = githubRequestPrefix(options.snapInId, options.issue.id, agentId, options.requestHash, repository, options.sourceUrl);
+  const reference = analysisReference({ connector: 'newrelic-github-v2', snap_in_id: options.snapInId, issue_id: options.issue.id,
+    agent_id: agentId, request_hash: options.requestHash, source_url: options.sourceUrl, github: { repository, analysis_comment_id: '' } });
   if (entries.some((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id &&
-    entry.visibility === 'internal' && entry.created_by?.id === options.serviceAccountId && entry.external_ref?.startsWith(prefix))) {
+    entry.visibility === 'internal' && entry.created_by?.id === options.serviceAccountId &&
+    (entry.external_ref === reference || entry.external_ref?.startsWith(prefix)))) {
     return { status: 'success', detail: 'This GitHub issue request was already submitted. Check its result in the internal discussion.' };
   }
   const completed = entries.filter((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id &&
