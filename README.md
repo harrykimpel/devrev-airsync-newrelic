@@ -74,6 +74,15 @@ old link format and posts a corrected link in its result comment.
 
 Open an imported issue and find the **New Relic context** component:
 
+The component declares `initialize_newrelic_context` as its initializer. This
+function returns the snap-kit controls when DevRev initializes the issue
+component. It does not query telemetry or post comments; those actions run only
+through `fetch_newrelic_context` after a button is clicked. A static
+`snap_kit_body` alone does not satisfy the issue component's initialization flow.
+For an installation that already has the context connection, apply this change
+with `npm run upgrade -- '<current-snap-in-version-id>'` from `code/`, then refresh
+the issue view. This initializer fix adds no connections or required scopes.
+
 - **Fetch New Relic context** queries 15 minutes before/after alert creation,
   clipping the end to the current time.
 - **Fetch latest 30 minutes** queries the same affected entities for the most
