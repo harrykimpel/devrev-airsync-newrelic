@@ -1,6 +1,6 @@
 {
   "name": "devrev-airsync-newrelic",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "New Relic alert issues connector for DevRev AirSync",
   "main": "./dist/index.js",
   "scripts": {
