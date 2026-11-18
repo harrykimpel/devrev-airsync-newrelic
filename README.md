@@ -81,6 +81,71 @@ historical re-sync. See the [normalized rich-text contract](https://developer.de
 
 Open an imported issue and find the **New Relic context** component:
 
+- **Analyze New Relic context** compares the alert window (creation ±15 minutes,
+  clipped to now) with the latest 30 minutes and asks the configured DevRev agent
+  for an incident brief focused on the alert.
+- **Analyze latest 30 minutes** collects the same two windows, focusing the
+  brief on current conditions.
+- **Fetch alert evidence** and **Fetch latest evidence** post bounded raw query
+  results for their respective window without invoking an agent.
+
+For analysis, create and publish an internal agent in **Settings → Agent Studio**.
+Give it instructions to summarize supplied evidence, distinguish facts from
+hypotheses, acknowledge missing/sampled data, and recommend investigation steps.
+The agent receives the issue title, source alert link, alert state and scrubbed,
+bounded telemetry. It does not need a New Relic connection or comment-writing
+skill: the connector handles collection and posting. Runbooks can be added as
+optional agent knowledge.
+
+In **Settings → Integrations → Snap-ins → New Relic → Configure**, set
+**Incident analysis agent ID** to the agent's full DON, for example
+`don:core:dvrv-us-1:devo/your-org:ai_agent/6`. `AG-6` is a display ID and is not
+accepted by this field. The agent must belong to the issue's organization. The
+requesting user needs permission to invoke the published agent. Grant the new
+optional **New Relic Bot `issue:read`** self scope for asynchronous comments,
+in addition to the existing user impersonation permission for reading issues.
+Analysis with a missing agent configuration fails explicitly; the evidence
+buttons remain available.
+
+The click first authorizes issue access as the user, collects both windows, and
+creates a bot-owned internal "analysis requested" comment. It then invokes the
+[DevRev asynchronous agent API](https://developer.devrev.ai/beta/api-reference/ai-agents/ai-agent-events-execute-async)
+as the user with the issue as the session's access-control parent. Each logical
+click gets its own session. The final `ai_agent_response` is routed to the
+manifest-managed **New Relic analyst responses** event source and
+`complete_newrelic_analysis` automation; no external callback server is needed.
+The callback verifies the installation, configured agent, session correlation,
+issue, comment reference, bot ownership, internal visibility and 30-minute
+request lifetime before replacing the pending comment. It cannot post an
+unsolicited comment on another issue. Progress events and repeated terminal
+deliveries are ignored. Agent failures become a concise failure notice, with
+evidence buttons available for investigation.
+
+The agent prompt stays below 16,384 characters. Per-section samples and rows may
+be further omitted or truncated for that budget; omissions and query failures
+are included in the evidence. The response is labeled AI-generated, scrubbed for
+common secrets, capped at 8,000 characters and linked to the source alert.
+The prompt asks for a brief under 400 words and explicitly treats telemetry text
+as untrusted data. The user-configured agent is responsible for following these
+instructions; generated hypotheses require verification. No complete-trace,
+baseline, recovery or root-cause conclusion is guaranteed by sampled data.
+
+`analysis:requested` and `analysis:complete` are fixed log markers. Failures use
+fixed codes such as `missing_analysis_agent`, `missing_analysis_context`,
+`analysis_comment_failed`, `agent_start_failed` and `invalid_analysis_binding`.
+Logs do not include prompts, messages, metadata, API errors or credentials.
+If no terminal event arrives within 30 minutes, the pending notice remains and
+instructs the user to retry or fetch evidence; DevRev currently does not promise
+an error event for every workflow timeout. A new click requests a fresh analysis.
+
+For an existing installation that already has `newrelic_context`, pull the
+changes and run `npm run upgrade -- '<current-snap-in-version-id>'` from `code/`.
+This analysis upgrade adds an optional organization input, event source,
+automation, function and optional self scope; it adds no connections or required
+scopes. Configure the agent ID and permissions after upgrading, then refresh the
+issue so the buttons bind to the current installation. The existing AirSync and
+user connection can be retained.
+
 The component declares `initialize_newrelic_context` as its initializer. This
 function returns the snap-kit controls when DevRev initializes the issue
 component. Its response includes `snap_kit_body.snap_in_id` from the current
@@ -131,11 +196,6 @@ The newer command does not accept the old `--all` flag. AirSync `transformer`
 warnings about `body` describe import validation and do not establish the cause
 of a `snap-components.initialize` database error.
 
-- **Fetch New Relic context** queries 15 minutes before/after alert creation,
-  clipping the end to the current time.
-- **Fetch latest 30 minutes** queries the same affected entities for the most
-  recent 30 minutes, useful during an ongoing investigation.
-
 Go to **Settings → Integrations → Snap-ins → New Relic → Configure → My Settings**.
 Turn on **Enable for me**, select the connection under **Connections**, and save.
 The connection description mentions your New Relic user key with access to the
@@ -165,13 +225,12 @@ The action sends this key only to the
 fixed regional NerdGraph endpoint inferred from the source alert link. Grant
 the optional `issue:read` impersonation permission. Timeline entries use their
 parent issue's permissions; DevRev has no separate `comment:write` scope. Issue
-reads and comment writes run as the clicking user; the bot cannot bypass an
-access denial. This resource-lookup fix changes no manifest connections or
-scopes, so it can be applied to an installation that already has the user
-connection with `npm run upgrade -- '<current-snap-in-version-id>'` from `code/`.
+reads, evidence comment writes and agent invocation run as the clicking user.
+Analysis status/result comments run as the bot only after successful user issue
+authorization. The callback updates only its bound, bot-owned internal request.
 
-The action loads the exact source issue and its entity GUIDs, then posts an
-**internal discussion comment** containing:
+The evidence actions load the exact source issue and its entity GUIDs, then post
+an **internal discussion comment** containing:
 
 - A corrected source alert permalink, account, entity GUIDs and UTC window.
 - APM throughput (requests/min), average duration (ms) and error percentage from
@@ -205,17 +264,18 @@ have no such metrics. Logs need entity correlation and a recognized `level`.
 Traces require retained Span events with `trace.id`. Returned spans are sampled
 evidence, not a complete distributed trace, and the slowest span is not the full
 trace duration. Empty data and query failures are shown explicitly; no automatic
-root-cause conclusion is generated. This is an on-demand snapshot, not continuous
-telemetry ingestion. The snap component is visible on issue views, and the
+root cause is established. Agent analysis is a separate interpretation of these
+bounded results. This is an on-demand snapshot, not continuous telemetry
+ingestion. The snap component is visible on issue views, and the
 handler verifies the source before fetching anything.
 
 References: [DevRev issue components](https://developer.devrev.ai/snapin-development/references/snap-components),
 [NRQL via NerdGraph](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-nrql-tutorial/),
 [APM metric queries](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-apm-metric-timeslice-data-nrql/).
 
-### Installing the context action on an existing organization
+### Installing on versions older than the user context connection
 
-This release adds a user connection. DevRev's documented
+Older connector versions did not have the user context connection. DevRev's documented
 [upgrade compatibility rules](https://developer.devrev.ai/snapin-development/upgrade-snap-ins)
 do **not** permit adding a connection to an existing snap-in version. If
 `npm run upgrade -- <version-DON>` rejects the manifest, do not use `--force`:

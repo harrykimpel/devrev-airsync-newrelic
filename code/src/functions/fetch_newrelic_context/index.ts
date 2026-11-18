@@ -4,13 +4,15 @@ import axios from 'axios';
 
 import { HttpClient, NewRelicApiError } from '../external-system/http-client';
 import { issuePermalink, parseIssueReference } from '../external-system/links';
+import { NewRelicIssue } from '../external-system/types';
+import { AnalysisError, analysisPrompt, configuredAgent, RESPONSE_SOURCE, Snapshot, startAnalysis } from './analysis';
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
 
 interface ContextEvent {
   payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
-  context: { secrets: { actor_session_token: string; service_account_token?: string }; snap_in_id: string };
+  context: { secrets: { actor_session_token: string; service_account_token?: string }; snap_in_id: string; service_account_id?: string };
   execution_metadata: { devrev_endpoint: string; request_id?: string };
-  input_data?: { keyrings?: Record<string, string>; resources?: { keyrings?: Record<string, { secret?: string; is_expired?: boolean } | string> } };
+  input_data?: { global_values?: Record<string, unknown>; event_sources?: Record<string, string>; keyrings?: Record<string, string>; resources?: { keyrings?: Record<string, { secret?: string; is_expired?: boolean } | string> } };
 }
 
 class ContextActionError extends Error {
@@ -56,7 +58,7 @@ function validateEvent(input: unknown): ContextEvent {
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
-  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent'].includes(event.payload.action.value)) {
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence'].includes(event.payload.action.value)) {
     throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
   }
   return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
@@ -99,41 +101,65 @@ function devRevFailure(operation: string, error: unknown): Error {
   return new Error(`DevRev ${operation} failed (${status ?? 'request error'}). Check issue access and grant the issue:read impersonation permission; timeline entries use the parent issue's permissions.`);
 }
 
-async function handleEvent(input: unknown) {
-  const event = validateEvent(input);
-  console.info('[newrelic-context] fetch:validated');
-  const key = await contextKey(event);
-  console.info('[newrelic-context] connection:ready');
-  const actorToken = event.context.secrets.actor_session_token;
-  // Both reads and writes run as the clicking user. Never fall back to a more privileged bot.
-  const devrev = client.setup({ endpoint: event.execution_metadata.devrev_endpoint, token: actorToken });
-  let work: publicSDK.Work;
-  try {
-    work = (await devrev.worksGet({ id: event.payload.context.object_id }, { timeout: 10000 })).data.work;
-  } catch (error) { throw devRevFailure('works.get', error); }
-  console.info('[newrelic-context] issue:loaded');
-  if (work.type !== 'issue') throw new Error('Fetch New Relic context is available only on issues.');
-  const reference = work.sync_metadata?.external_reference ?? work.body?.match(/\[Open in New Relic\]\(<([^>]+)>\)/)?.[1];
-  const source = parseIssueReference(reference ?? '');
-  const recordId = work.sync_metadata?.external_record_id;
-  if (recordId && recordId !== `${source.accountId}:${source.issueId}`) throw new Error('The source link does not match this issue’s AirSync record ID. Re-sync the issue.');
-  const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
-  const issue = await newrelic.getIssue(source.accountId, source.issueId, Date.parse(work.created_date ?? ''));
-  const plan = planContext(issue, event.payload.action.value as 'alert' | 'recent', Date.now());
+async function collectSnapshot(newrelic: HttpClient, accountId: string, issue: NewRelicIssue, mode: 'alert' | 'recent', now: number): Promise<Snapshot> {
+  const plan = planContext(issue, mode, now);
   // Three independent, five-second NRQL queries; failures remain visible beside successful sections.
   const results: QueryResult[] = await Promise.all(plan.queries.map(async (query) => {
-    try { return { ...query, rows: await newrelic.nrql(source.accountId, query.query) }; }
+    try { return { ...query, rows: await newrelic.nrql(accountId, query.query) }; }
     catch (error) {
       return { ...query, error: error instanceof NewRelicApiError ? error.message : 'Query failed. Check New Relic permissions and retry.' };
     }
   }));
   const spans = traceSpansQuery(plan, results[2]?.rows ?? []);
   if (spans) {
-    try { results.push({ ...spans, rows: await newrelic.nrql(source.accountId, spans.query) }); }
+    try { results.push({ ...spans, rows: await newrelic.nrql(accountId, spans.query) }); }
     catch (error) { results.push({ ...spans, error: error instanceof NewRelicApiError ? error.message : 'Span details unavailable. Check New Relic permissions and retry.' }); }
   }
-  const body = renderContext(issuePermalink(source.accountId, source.issueId, source.region), source.accountId, plan, results, [key, actorToken]);
+  return { mode, plan, results };
+}
+
+async function handleEvent(input: unknown) {
+  const event = validateEvent(input);
+  console.info('[newrelic-context] fetch:validated');
+  const key = await contextKey(event);
+  console.info('[newrelic-context] connection:ready');
+  const actorToken = event.context.secrets.actor_session_token;
+  // Authorize the issue as the clicking user before any telemetry or bot writes.
+  const devrev = client.setup({ endpoint: event.execution_metadata.devrev_endpoint, token: actorToken });
+  let work: publicSDK.Work;
+  try {
+    work = (await devrev.worksGet({ id: event.payload.context.object_id }, { timeout: 10000 })).data.work;
+  } catch (error) { throw devRevFailure('works.get', error); }
+  console.info('[newrelic-context] issue:loaded');
+  if (work.type !== 'issue' || work.id !== event.payload.context.object_id) throw new Error('Fetch New Relic context is available only on the selected issue.');
+  const reference = work.sync_metadata?.external_reference ?? work.body?.match(/\[Open in New Relic\]\(<([^>]+)>\)/)?.[1];
+  const source = parseIssueReference(reference ?? '');
+  const recordId = work.sync_metadata?.external_record_id;
+  if (recordId && recordId !== `${source.accountId}:${source.issueId}`) throw new Error('The source link does not match this issue’s AirSync record ID. Re-sync the issue.');
+  const evidenceOnly = ['evidence', 'recent_evidence'].includes(event.payload.action.value);
+  const mode = ['recent', 'recent_evidence'].includes(event.payload.action.value) ? 'recent' : 'alert';
+  const agentId = evidenceOnly ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
+  const eventSource = event.input_data?.event_sources?.[RESPONSE_SOURCE];
+  const serviceToken = event.context.secrets.service_account_token;
+  const serviceAccountId = event.context.service_account_id;
+  if (!evidenceOnly && (!nonEmpty(eventSource) || !nonEmpty(serviceToken) || !nonEmpty(serviceAccountId))) {
+    throw new AnalysisError('missing_analysis_context', 'The snap-in is missing its analysis response event source or service context. Upgrade the current installation with the analysis manifest.');
+  }
+  const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
+  const issue = await newrelic.getIssue(source.accountId, source.issueId, Date.parse(work.created_date ?? ''));
+  const now = Date.now();
+  const sourceUrl = issuePermalink(source.accountId, source.issueId, source.region);
   const requestHash = createHash('sha256').update(`${event.context.snap_in_id}:${event.payload.request_id}`).digest('hex');
+  if (!evidenceOnly) {
+    const snapshots = await Promise.all((['alert', 'recent'] as const).map((window) => collectSnapshot(newrelic, source.accountId, issue, window, now)));
+    return startAnalysis({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
+      serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
+      snapInId: event.context.snap_in_id, issueId: work.id, agentId, requestHash, sourceUrl,
+      prompt: analysisPrompt(work.title ?? '', sourceUrl, issue, snapshots, mode, [key, actorToken, serviceToken!]),
+    });
+  }
+  const { plan, results } = await collectSnapshot(newrelic, source.accountId, issue, mode, now);
+  const body = renderContext(sourceUrl, source.accountId, plan, results, [key, actorToken]);
   const externalRef = `newrelic-context:${requestHash}`;
   try {
     await devrev.timelineEntriesCreate({
@@ -168,7 +194,7 @@ export default async function run(events: unknown[]) {
     return result;
   } catch (error) {
     // Only fixed, locally assigned codes are logged, never event data or raw errors.
-    console.error(`[newrelic-context] fetch:failed code=${error instanceof ContextActionError ? error.code : 'request_failed'}`);
+    console.error(`[newrelic-context] fetch:failed code=${error instanceof ContextActionError || error instanceof AnalysisError ? error.code : 'request_failed'}`);
     throw error;
   }
 }
