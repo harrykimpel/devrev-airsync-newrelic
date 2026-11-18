@@ -73,7 +73,7 @@ interface Binding {
   github?: { repository: string; analysis_comment_id: string };
   coding?: CodingBinding;
 }
-export interface AnalysisMetadata extends Binding { comment_id: string }
+export interface AnalysisMetadata extends Binding { comment_id: string; binding_record_id?: string }
 
 export function githubRequestPrefix(snapInId: string, issueId: string, agentId: string, requestHash: string, repository: string, sourceUrl: string): string {
   return 'newrelic-github:' + createHash('sha256').update(JSON.stringify([
@@ -169,7 +169,8 @@ export async function startAnalysis(options: StartOptions) {
     const fingerprint = githubBinding(binding);
     const stored = await persistRequestRecord({ bot, issueId: options.issueId, commentId: comment.id, botId: options.serviceAccountId,
       reference: recordReference('binding', reference), body: fingerprint });
-    if (stored !== fingerprint) throw new AnalysisError('invalid_analysis_binding', 'The GitHub request is bound to a different completed brief.');
+    if (stored.body !== fingerprint) throw new AnalysisError('invalid_analysis_binding', 'The GitHub request is bound to a different completed brief.');
+    metadata.binding_record_id = stored.id;
   }
   try {
     const agent = client.setupBeta({ endpoint: options.endpoint, token: options.actorToken });
@@ -197,6 +198,7 @@ export async function startAnalysis(options: StartOptions) {
 
 /** Called only by the DevRev event-source automation, never by a public webhook. */
 export async function finishAnalysis(input: unknown) {
+  console.info('[newrelic-context] callback:start');
   const event = input as {
     payload?: { type?: string; ai_agent_response?: { agent?: string; agent_response?: string; session_object?: string; message?: string; client_metadata?: AnalysisMetadata } };
     context?: { snap_in_id?: string; service_account_id?: string; secrets?: { service_account_token?: string } };
@@ -237,19 +239,28 @@ export async function finishAnalysis(input: unknown) {
   const endpoint = event.execution_metadata?.devrev_endpoint;
   if (!token || !botId || !endpoint) throw new AnalysisError('missing_analysis_context', 'Missing snap-in service context for analysis completion.');
   const bot = client.setup({ endpoint, token });
+  console.info('[newrelic-context] callback:request_lookup');
   const entry = (await bot.timelineEntriesGet({ id: metadata.comment_id }, { timeout: 10000 })).data.timeline_entry;
   if (entry.type !== 'timeline_comment' || entry.object !== metadata.issue_id || entry.visibility !== 'internal' ||
     entry.created_by?.id !== botId || entry.external_ref !== analysisReference(metadata)) {
     throw new AnalysisError('invalid_analysis_binding', 'The analysis response is not bound to a bot-owned internal request.');
   }
   if (metadata.connector === 'newrelic-github-v2') {
+    if (metadata.binding_record_id !== undefined && typeof metadata.binding_record_id !== 'string') {
+      throw new AnalysisError('invalid_analysis_binding', 'The GitHub response has invalid record metadata.');
+    }
+    console.info('[newrelic-context] callback:binding_lookup');
     const stored = await readRequestRecord({ bot, issueId: metadata.issue_id, commentId: metadata.comment_id, botId,
-      reference: recordReference('binding', analysisReference(metadata)) });
-    if (stored !== githubBinding(metadata)) throw new AnalysisError('invalid_analysis_binding', 'The GitHub response does not match the reserved source brief.');
+      reference: recordReference('binding', analysisReference(metadata)), recordId: metadata.binding_record_id });
+    if (stored.body !== githubBinding(metadata)) throw new AnalysisError('invalid_analysis_binding', 'The GitHub response does not match the reserved source brief.');
+    console.info('[newrelic-context] callback:binding_ready');
   }
   if (!('body' in entry) || typeof entry.body !== 'string' || !entry.body.startsWith(coding ? CODING_PENDING_PREFIX : github ? GITHUB_PENDING_PREFIX : PENDING_PREFIX)) return { status: 'ignored' };
   const age = Date.now() - Date.parse(entry.created_date ?? '');
-  if (!Number.isFinite(age) || age < -60000 || age > ANALYSIS_TTL_MS) return { status: 'expired' };
+  if (!Number.isFinite(age) || age < -60000 || age > ANALYSIS_TTL_MS) {
+    console.info('[newrelic-context] callback:expired');
+    return { status: 'expired' };
+  }
   const message = typeof response.message === 'string' ? redact(response.message, [token]).trim() : '';
   const githubBody = github && response.agent_response === 'message' ? githubResult(message, metadata.github!.repository) : undefined;
   const codingBody = coding && response.agent_response === 'message' ? codingResult(message, metadata.coding!) : undefined;
@@ -261,9 +272,11 @@ export async function finishAnalysis(input: unknown) {
   // A durable first-writer record arbitrates concurrent terminal events across
   // workers. All contenders publish the SAME stored body, so a late error
   // cannot overwrite a successful winner. Failed updates can retry safely.
+  console.info('[newrelic-context] callback:result_record');
   const winner = await persistRequestRecord({ bot, issueId: metadata.issue_id, commentId: metadata.comment_id, botId,
     reference: recordReference('terminal', analysisReference(metadata) + ':' + metadata.comment_id), body });
-  await bot.timelineEntriesUpdate({ id: entry.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body: winner }, { timeout: 10000 });
+  console.info('[newrelic-context] callback:discussion_update');
+  await bot.timelineEntriesUpdate({ id: entry.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body: winner.body }, { timeout: 10000 });
   console.info(coding ? '[newrelic-context] coding:complete' : github ? '[newrelic-context] github:complete' : '[newrelic-context] analysis:complete');
   return { status: 'success' };
 }

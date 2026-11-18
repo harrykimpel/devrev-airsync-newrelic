@@ -71,8 +71,9 @@ beforeEach(() => {
     comments.push(entry);
     return { data: { timeline_entry: entry } };
   });
-  bot.timelineEntriesGet.mockImplementation(async ({ id, external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref) : comments.find((entry) => entry.id === id) } }));
-  bot.timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: comments } }));
+  bot.timelineEntriesGet.mockImplementation(async ({ id, external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref)
+    : [...records.values()].find((entry) => entry.id === id) ?? comments.find((entry) => entry.id === id) } }));
+  bot.timelineEntriesList.mockImplementation(async ({ visibility } = {}) => ({ data: { timeline_entries: visibility?.includes('private') ? [...records.values()] : comments } }));
   bot.timelineEntriesUpdate.mockImplementation(async ({ id, body }) => {
     const entry = comments.find((entry) => entry.id === id)!;
     entry.body = body;

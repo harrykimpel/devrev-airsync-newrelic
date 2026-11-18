@@ -69,8 +69,9 @@ beforeEach(() => {
     comment = { ...request, id: issueId + ':comment/analysis', created_by: { id: serviceAccountId }, created_date: new Date(now).toISOString() };
     return { data: { timeline_entry: comment } };
   });
-  bot.timelineEntriesGet.mockImplementation(async ({ external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref) : comment } }));
-  bot.timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: [comment] } }));
+  bot.timelineEntriesGet.mockImplementation(async ({ id, external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref)
+    : [...records.values()].find((entry) => entry.id === id) ?? comment } }));
+  bot.timelineEntriesList.mockImplementation(async ({ visibility } = {}) => ({ data: { timeline_entries: visibility?.includes('private') ? [...records.values()] : [comment] } }));
   bot.timelineEntriesUpdate.mockImplementation(async (request) => { comment = { ...comment, body: request.body }; return { data: { timeline_entry: comment } }; });
   agent.aiAgentEventsExecuteAsync.mockResolvedValue({ data: { session: { id: core + ':ai_agent_session/1' } } });
 });
@@ -458,4 +459,44 @@ test.each(['author', 'object', 'visibility', 'reference', 'id'])('does not publi
   await expect(complete([response()])).rejects.toThrow('Check the fixed failure code');
   expect(bot.timelineEntriesUpdate).not.toHaveBeenCalled();
   expect(comment.body).toContain('analysis requested');
+});
+
+test('completes the reported existing-issue reply through the stored binding record ID', async () => {
+  await fetchContext([click('github')]);
+  const event = response('message', readFileSync(join(__dirname, 'fixtures/github-agent-existing-reply.txt'), 'utf8'));
+  expect(event.payload.ai_agent_response.client_metadata.binding_record_id).toBe(issueId + ':comment/record-0');
+  await complete([event]);
+  expect(bot.timelineEntriesGet).toHaveBeenCalledWith({ id: issueId + ':comment/record-0' }, { timeout: 10000 });
+  expect(comment.body).toContain('[GitHub issue #166](<https://github.com/' + repository + '/issues/166>)');
+});
+
+test.each(['unsupported query', 'ignored query'])('completes an older v2 request when external-reference GET has an %s', async (behavior) => {
+  await fetchContext([click('github')]);
+  const event = response('message', readFileSync(join(__dirname, 'fixtures/github-agent-existing-reply.txt'), 'utf8'));
+  delete event.payload.ai_agent_response.client_metadata.binding_record_id;
+  const originalGet = bot.timelineEntriesGet.getMockImplementation()!;
+  bot.timelineEntriesGet.mockImplementation(async (request) => {
+    if (request.external_ref) {
+      if (behavior === 'unsupported query') throw { isAxiosError: true, response: { status: 400 } };
+      return { data: { timeline_entry: comment } };
+    }
+    return originalGet(request);
+  });
+  await complete([event]);
+  expect(comment.body).toContain('GitHub issue #166');
+  expect(bot.timelineEntriesList).toHaveBeenCalledWith(expect.objectContaining({ object: issueId, visibility: ['private'] }), { timeout: 10000 });
+});
+
+test('logs the failing record operation and HTTP status without response data or credentials', async () => {
+  await fetchContext([click('github')]);
+  const event = response('message', '{}');
+  const originalGet = bot.timelineEntriesGet.getMockImplementation()!;
+  bot.timelineEntriesGet.mockImplementation(async (request) => {
+    if (request.id === event.payload.ai_agent_response.client_metadata.binding_record_id) throw { isAxiosError: true, response: { status: 503, data: 'private-nr-key' } };
+    return originalGet(request);
+  });
+  bot.timelineEntriesList.mockRejectedValueOnce({ isAxiosError: true, response: { status: 403, data: 'actor-token' } });
+  await expect(complete([event])).rejects.toThrow('Check the fixed failure code');
+  expect(console.error).toHaveBeenCalledWith('[newrelic-context] analysis:failed code=request_record_read_failed status=403');
+  expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token/);
 });

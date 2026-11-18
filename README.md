@@ -190,6 +190,13 @@ source-brief binding privately before dispatch; the click's uniqueness key does
 not depend on which brief was selected. These records introduce no new connection
 or permission requirement. See the [review decisions](docs/COPILOT_REVIEW_FOLLOWUPS.md).
 
+Version 1.4.2 stores the private source-binding record's actual ID in new GitHub
+callback metadata. Record reads use that ID directly and provide a bounded,
+validated private-list fallback for older external-reference lookups. Completion
+stage markers and fixed record error codes/HTTP status help diagnose a GitHub
+issue that exists while the discussion remains pending. See
+[GitHub callback troubleshooting](docs/GITHUB_ISSUE_AGENT.md#github-issue-exists-but-the-discussion-stays-pending).
+
 The agent prompt stays below 16,384 characters. Per-section samples and rows may
 be further omitted or truncated for that budget; omissions and query failures
 are included in the evidence. The response is labeled AI-generated, scrubbed for

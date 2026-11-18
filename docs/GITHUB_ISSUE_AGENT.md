@@ -189,6 +189,51 @@ checking the destination. Multiple JSON objects, unsupported statuses, mismatche
 issue numbers, arrays/incomplete containers, and URLs outside the configured repository remain rejected. A URL
 mentioned only in prose is not a structured success result.
 
+### GitHub issue exists but the discussion stays pending
+
+The reported prose-prefixed, Markdown-linked `existing` reply for issue #166 is
+valid and is covered by a regression fixture. If the comment still says
+**GitHub issue requested**, inspect the completion function rather than changing
+the agent's result format. A rejected report would produce an unavailable notice;
+a pending comment can indicate an ignored/expired callback or an API failure.
+
+In 1.4.2, new GitHub requests include the actual private source-binding record ID
+in callback metadata and read that record directly. Older v2 requests still use
+external-reference lookup, with a compatibility fallback that searches up to
+five pages of private timeline entries (500 entries). It validates the exact
+reference, record ID when supplied, parent issue, bot author and visibility;
+an arbitrary comment or missing record cannot substitute for the binding. The
+same fallback reconciles result-record conflicts or lost create responses.
+
+The user-supplied runtime logs showed repeated `analysis:failed code=request_failed`
+after `github:requested`, while the analyst's callback completed. Those logs
+confirm a callback failure but do not identify the exact failing API. The new
+lookup path avoids reliance on external-reference GET for newly created bindings;
+live confirmation in the target org is still needed.
+
+Use DevRev CLI 0.4.16 or newer:
+
+```bash
+devrev snap_in_package logs --query newrelic-context --limit 100 \
+  --org harry-kimpel-testing --usr harry.kimpel@devrev.ai
+```
+
+Share only the fixed `[newrelic-context]` log messages. Do not share event
+payloads, headers, tokens or cookies. Completion stages now include
+`callback:request_lookup`, `callback:binding_lookup`, `callback:binding_ready`,
+`callback:result_record`, `callback:discussion_update`, and `callback:expired`.
+`record:lookup_fallback` identifies a compatibility lookup. Record failures use
+codes such as `request_record_read_failed`, `request_record_missing`,
+`request_record_invalid` or `request_record_lookup_incomplete`, with an HTTP
+status when available. Raw API responses and agent messages are not logged.
+
+Upgrade the existing installation to 1.4.2, refresh the issue, and run **Create
+GitHub issue** again. Its search-first workflow should return the existing issue
+by the incident marker. Do not manually create another GitHub issue. The old
+pending comment is not automatically rewritten by upgrading; an already expired
+callback remains expired. No agent instruction, connection or permission change
+is required by this patch.
+
 If GitHub creation succeeds but the internal discussion says the request is
 unavailable, inspect the agent's final reply in **Observe → Sessions**. Versions
 before 1.3.1 rejected introductory prose and Markdown-formatted URL values.
