@@ -32,9 +32,33 @@ if (command === 'snap_in_version create-one') {
   if (mode === 'version-json-zero') { console.log('\\x1b[31m' + JSON.stringify({debug_message:'following scopes do not exist: [comment:write]',message:'Bad Request',type:'bad_request'}) + '\\x1b[0m'); process.exit(0); }
   if (mode === 'version-nonzero') { console.error('version creation failed'); process.exit(7); }
   if (mode === 'version-missing-id') { console.log('{}'); process.exit(0); }
+  if (mode.startsWith('recover-')) { console.log('terminal progress: ' + JSON.stringify({snap_in_version:{id:${JSON.stringify(versionId)}}})); process.exit(0); }
+  if (mode === 'long-json') { console.log(JSON.stringify({snap_in_version:{id:${JSON.stringify(versionId)},state:'draft',manifest:('version: "2"\\ntext: alert’s affected entities\\n').repeat(500)}})); process.exit(0); }
   console.log(JSON.stringify({snap_in_version:{id:${JSON.stringify(versionId)}}})); process.exit(0);
 }
-if (command === 'snap_in_version show') { console.log(JSON.stringify({snap_in_version:{state:'ready'}})); process.exit(0); }
+if (command === 'snap_in_version list') {
+  if (mode === 'recover-error') { console.log(JSON.stringify({message:'access denied',type:'forbidden'})); process.exit(0); }
+  if (mode === 'recover-nonzero') { console.error('query failed'); process.exit(4); }
+  const version = {id:${JSON.stringify(versionId)}};
+  if (mode === 'recover-delayed') {
+    const counter = process.env.DEPLOY_TEST_LOG + '.counter';
+    const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter,'utf8')) : 0;
+    fs.writeFileSync(counter,String(count+1));
+    if (!count) { console.log('[]'); process.exit(0); }
+  }
+  if (mode === 'recover-raw' || mode === 'recover-delayed') { console.log(JSON.stringify(version)); process.exit(0); }
+  if (mode === 'recover-wrapped') { console.log(JSON.stringify({snap_in_versions:[version]})); process.exit(0); }
+  if (mode === 'recover-array') { console.log(JSON.stringify([version])); process.exit(0); }
+  if (mode === 'recover-jsonl') { console.log(JSON.stringify(version)); console.log(JSON.stringify(version)); process.exit(0); }
+  if (mode === 'recover-ambiguous') { console.log(JSON.stringify([version,{id:${JSON.stringify(packageId + ':snap_in_version/other')}}])); process.exit(0); }
+  if (mode === 'recover-wrong-package') { console.log(JSON.stringify({id:'don:integration:example:devo/other:snap_in_package/unrelated:snap_in_version/unrelated'})); process.exit(0); }
+  console.log('[]'); process.exit(0);
+}
+if (command === 'snap_in_version show') {
+  if (mode === 'show-error') { console.log(JSON.stringify({message:'read denied',type:'forbidden'})); process.exit(0); }
+  if (mode === 'build-failed') { console.log(JSON.stringify({snap_in_version:{state:'build_failed',failure_reason:'test build failed'}})); process.exit(0); }
+  console.log(JSON.stringify({snap_in_version:{state:'ready'}})); process.exit(0);
+}
 if (command === 'snap_in draft' || command === 'snap_in activate') {
   const step = command.split(' ')[1];
   if (mode === step + '-json-zero') { console.log(JSON.stringify({message:step + ' denied',type:'forbidden'})); process.exit(0); }
@@ -70,14 +94,47 @@ function run(mode: string) {
   return { ...result, calls };
 }
 
-test.each(['version-json-zero', 'version-nonzero', 'version-missing-id'])('fails %s and only cleans up the newly created package', (mode) => {
+test.each(['version-json-zero', 'version-nonzero', 'version-missing-id'])('fails %s and preserves the package for inspection', (mode) => {
   const result = run(mode);
   expect(result.status).toBe(1);
-  expect(result.stdout).toContain(mode === 'version-missing-id' ? 'Failed to get version ID' : 'Failed to create snap-in version');
-  expect(result.calls.filter((args) => args[1] === 'delete-one')).toEqual([['snap_in_package', 'delete-one', packageId]]);
+  expect(result.stdout).toContain(mode === 'version-missing-id' ? 'Failed to get a unique version ID' : 'Failed to create snap-in version');
+  expect(result.calls.some((args) => args[1] === 'delete-one')).toBe(false);
+  expect(result.stdout).toContain('Package retained for inspection');
   expect(result.calls.some((args) => args[1] === 'draft' || args[1] === 'activate')).toBe(false);
   expect(result.stdout).not.toContain('Lambda deployment complete');
   if (mode === 'version-json-zero') expect(result.stdout).toContain('following scopes do not exist');
+});
+
+test.each(['recover-raw', 'recover-wrapped', 'recover-array', 'recover-jsonl', 'recover-delayed'])('recovers the version from its new package after terminal parsing fails (%s)', (mode) => {
+  const result = run(mode);
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('Recovered version ID from the package');
+  const queries = result.calls.filter((args) => args[0] === 'snap_in_version' && args[1] === 'list');
+  expect(queries.length).toBe(mode === 'recover-delayed' ? 2 : 1);
+  for (const query of queries) expect(query).toEqual(['snap_in_version', 'list', '--package', packageId, '--all', '--org', 'test-org', '--usr', 'developer@example.com']);
+  expect(result.calls).toContainEqual(['snap_in', 'draft', '--snap_in_version', versionId]);
+  expect(result.calls.some((args) => args[1] === 'delete-one')).toBe(false);
+});
+
+test.each(['recover-error', 'recover-nonzero', 'recover-ambiguous', 'recover-wrong-package'])('does not guess a version or delete the package when recovery fails (%s)', (mode) => {
+  const result = run(mode);
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('Package retained for inspection');
+  expect(result.calls.some((args) => args[1] === 'draft' || args[1] === 'activate' || args[1] === 'delete-one')).toBe(false);
+});
+
+test.each(['show-error', 'build-failed'])('preserves the existing version and package after %s', (mode) => {
+  const result = run(mode);
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('Package retained for inspection');
+  expect(result.calls.some((args) => args[1] === 'delete-one' || args[1] === 'draft')).toBe(false);
+});
+
+test('reads a long create response with an escaped manifest and Unicode, without recovery', () => {
+  const result = run('long-json');
+  expect(result.status).toBe(0);
+  expect(result.calls.some((args) => args[0] === 'snap_in_version' && args[1] === 'list')).toBe(false);
+  expect(result.stdout).toContain('Lambda deployment complete');
 });
 
 test.each(['draft-json-zero', 'draft-nonzero', 'activate-json-zero', 'activate-nonzero'])('does not claim a successful deployment after %s', (mode) => {
