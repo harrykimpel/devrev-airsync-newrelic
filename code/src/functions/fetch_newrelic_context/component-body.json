@@ -1,0 +1,40 @@
+{
+  "snaps": [
+    {
+      "type": "card",
+      "title": { "type": "plain_text", "text": "New Relic context" },
+      "elements": [
+        {
+          "type": "content",
+          "elements": [
+            {
+              "type": "plain_text",
+              "text": "Fetch telemetry for the alert’s affected entities. Default window is 15 minutes before/after the alert; results are posted as an internal comment."
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "style": "primary",
+              "value": "alert",
+              "text": { "type": "plain_text", "text": "Fetch New Relic context" }
+            },
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "recent",
+              "text": { "type": "plain_text", "text": "Fetch latest 30 minutes" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

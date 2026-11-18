@@ -33,6 +33,8 @@ functions:
     description: Extract New Relic accounts and alert issues
   - name: fetch_newrelic_context
     description: Fetch bounded New Relic metrics, logs and trace samples for an issue
+  - name: initialize_newrelic_context
+    description: Initialize the New Relic context issue component
 
 keyrings:
   user:
@@ -53,6 +55,7 @@ snap_components:
     description: Fetch metrics, error logs and trace samples for this New Relic issue
     surface: issue
     snap_kit_action_name: fetch_newrelic_context
+    initializer: initialize_newrelic_context
     snap_kit_body:
       snaps:
         - type: card
