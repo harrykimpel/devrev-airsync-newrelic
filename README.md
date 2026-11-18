@@ -77,6 +77,13 @@ source records to restore descriptions and visible links. Upgrading the snap-in
 alone does not rewrite bodies already imported; unchanged records may need a
 historical re-sync. See the [normalized rich-text contract](https://developer.devrev.ai/airsync/data-model/rich-text-fields).
 
+## New Relic logo
+
+Official New Relic emblem files are included in [assets/newrelic](assets/newrelic).
+See [branding configuration](docs/BRANDING.md) for the marketplace icon workflow
+and the limits of changing the icon on a direct CLI installation. Adding an image
+to the repository or redeploying alone does not change DevRev's displayed icon.
+
 ## Fetch New Relic context on an issue
 
 Open an imported issue and find the **New Relic context** component:
