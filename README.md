@@ -240,6 +240,32 @@ assuming the zero timestamp means expired. If no usable token exists in
 Codespaces, the scripts stop with instructions instead of opening a terminal
 browser. Tokens are not printed or passed as command-line arguments.
 
+### Version creation succeeds but deployment cannot read the version ID
+
+`Failed to get version ID` after a successful version-create response is a
+deployment-script parsing failure, not evidence that old packages are blocking
+deployment. The CLI's interactive terminal output mixes npm logs, terminal
+control sequences and JSON. If that output does not yield one version belonging
+to the newly created package, Lambda deployment now queries:
+
+```sh
+devrev snap_in_version list --package '<new-package-id>' --all --org '<org>' --usr '<email>'
+```
+
+The script continues only when that package has exactly one identifiable version.
+It accepts bare objects, wrapped lists, arrays and JSON lines, and retries an empty
+list up to three times for visibility delays. It never selects a version from
+another package or guesses between multiple versions. Real CLI/API errors still
+stop deployment.
+
+Once version creation has been attempted, failure paths retain the package and
+any versions for inspection rather than trying to delete a potentially non-empty
+package. Failures before version creation, such as ngrok startup failure, still
+clean up the newly created empty package. Inspect the retained version in DevRev
+or with the command above before deciding whether to resume or remove it. These
+recovery paths are tested with mocked CLI responses; a live deployment still
+needs validation in the target organization.
+
 ### Update an existing installation
 
 `npm run deploy` creates a new package, version and installed snap-in. Reusing

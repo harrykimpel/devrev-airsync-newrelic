@@ -13,12 +13,56 @@ success() { echo -e "${GREEN}SUCCESS: $1${NC}"; }
 # Some CLI releases return zero even for an API error, so inspect JSON as well.
 devrev_json_objects() {
     jq -Rs 'gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") as $output |
-        (try ($output | fromjson) catch ($output | split("\n")[] | fromjson?)) | select(type == "object")'
+        (try ($output | fromjson) catch ($output | split("\n")[] | fromjson?)) |
+        (if type == "array" then .[] else . end) | select(type == "object")'
 }
 
 devrev_output_has_error() {
     printf '%s\n' "$1" | devrev_json_objects | jq -se 'any(.[];
         .error? != null or (.message? != null and (.type? != null or .debug_message? != null)))' >/dev/null
+}
+
+# Accept create responses, wrapped lists, and the CLI's one-object-per-line lists.
+# Only identify versions belonging to the package created by this deployment.
+version_ids_in_output() {
+    devrev_json_objects | jq -r --arg package "$SIP_ID" '
+        [.snap_in_version?, .snap_in_versions[]?, .][] |
+        select(type == "object") | .id? |
+        select(type == "string") |
+        select(startswith($package + ":snap_in_version/") and (test("[[:space:]]") | not))' | sort -u
+}
+
+preserve_created_package() {
+    echo "Package retained for inspection: $SIP_ID"
+    echo "Inspect its versions: devrev snap_in_version list --package '$SIP_ID' --all --org '$DEV_ORG' --usr '$USER_EMAIL'"
+}
+
+recover_created_version() {
+    local output status ids count attempt
+    echo "Could not read a unique version ID from the terminal output; querying the newly created package..."
+    # A successful create may take a moment to appear in the list API.
+    for attempt in 1 2 3; do
+        output=$(devrev snap_in_version list --package "$SIP_ID" --all "${DEVREV_ENV_ARGS[@]}" --org "$DEV_ORG" --usr "$USER_EMAIL" 2>&1)
+        status=$?
+        if [ "$status" -ne 0 ] || devrev_output_has_error "$output"; then
+            error "Could not query versions in the new package (CLI exit status: $status)"
+            printf '%s\n' "$output"
+            return 1
+        fi
+        ids=$(printf '%s\n' "$output" | version_ids_in_output)
+        count=$(printf '%s\n' "$ids" | awk 'NF { n++ } END { print n+0 }')
+        if [ "$count" -eq 1 ]; then
+            VERSION_ID="$ids"
+            success "Recovered version ID from the package"
+            return 0
+        elif [ "$count" -gt 1 ]; then
+            error "The new package contains multiple versions; refusing to choose one automatically"
+            return 1
+        fi
+        if [ "$attempt" -lt 3 ]; then sleep 2; fi
+    done
+    error "No version could be identified in the new package after three queries"
+    return 1
 }
 
 # Prompt with default value
@@ -367,12 +411,12 @@ if [ "$DEPLOY_MODE" = "local" ]; then
     CREATE_EXIT=${PIPESTATUS[0]}
 
     if [ $CREATE_EXIT -ne 0 ] || devrev_output_has_error "$(cat "$LOCAL_CREATE_LOG")"; then
-        error "Failed to create snap-in version"
+        error "Failed to create snap-in version (CLI exit status: $CREATE_EXIT)"
         echo ""
         echo "=== devrev CLI output ==="
         cat "$LOCAL_CREATE_LOG"
         echo "========================="
-        cleanup_package "$SIP_ID"
+        preserve_created_package
         rm -f "$LOCAL_CREATE_LOG"
         exit 1
     fi
@@ -435,25 +479,23 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
     rm -f "$TEMP_OUTPUT"
 
     if [ $CREATE_EXIT -ne 0 ] || devrev_output_has_error "$VER_OUTPUT"; then
-        error "Failed to create snap-in version"
+        error "Failed to create snap-in version (CLI exit status: $CREATE_EXIT)"
         echo ""
         echo "=== devrev CLI output ==="
         echo "$VER_OUTPUT"
         echo "========================="
-        cleanup_package "$SIP_ID"
+        preserve_created_package
         exit 1
     fi
 
-    VERSION_ID=$(printf '%s\n' "$VER_OUTPUT" | devrev_json_objects | jq -r '.snap_in_version.id // empty' | head -1)
+    VERSION_ID=$(printf '%s\n' "$VER_OUTPUT" | version_ids_in_output)
 
-    if [ -z "$VERSION_ID" ] || [ "$VERSION_ID" == "null" ]; then
-        error "Failed to get version ID"
-        echo ""
-        echo "=== devrev CLI output ==="
-        echo "$VER_OUTPUT"
-        echo "========================="
-        cleanup_package "$SIP_ID"
-        exit 1
+    if [ -z "$VERSION_ID" ] || [[ "$VERSION_ID" == *$'\n'* ]]; then
+        if ! recover_created_version; then
+            error "Failed to get a unique version ID; deployment stopped without deleting the package"
+            preserve_created_package
+            exit 1
+        fi
     fi
 
     success "Created version: $VERSION_ID"
@@ -463,12 +505,13 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
     sleep 10
 
     while true; do
-        VER_STATUS=$(devrev snap_in_version show "$VERSION_ID" 2>/dev/null)
-        STATE=$(echo "$VER_STATUS" | jq -r '.snap_in_version.state' 2>/dev/null)
+        VER_STATUS=$(devrev snap_in_version show "$VERSION_ID" "${DEVREV_ENV_ARGS[@]}" --org "$DEV_ORG" --usr "$USER_EMAIL" 2>&1)
+        SHOW_EXIT=$?
+        STATE=$(printf '%s\n' "$VER_STATUS" | devrev_json_objects | jq -r '.snap_in_version.state // .state // empty' | head -1)
 
-        if [ -z "$STATE" ] || [ "$STATE" == "null" ]; then
+        if [ "$SHOW_EXIT" -ne 0 ] || devrev_output_has_error "$VER_STATUS" || [ -z "$STATE" ]; then
             error "Failed to get version status"
-            cleanup_package "$SIP_ID"
+            preserve_created_package
             exit 1
         fi
 
@@ -476,9 +519,9 @@ if [ "$DEPLOY_MODE" = "lambda" ]; then
             success "Version ready"
             break
         elif [[ "$STATE" == "build_failed" ]] || [[ "$STATE" == "deployment_failed" ]]; then
-            REASON=$(echo "$VER_STATUS" | jq -r '.snap_in_version.failure_reason' 2>/dev/null)
+            REASON=$(printf '%s\n' "$VER_STATUS" | devrev_json_objects | jq -r '.snap_in_version.failure_reason // .failure_reason // "No reason provided"')
             error "Build/deployment failed: $REASON"
-            cleanup_package "$SIP_ID"
+            preserve_created_package
             exit 1
         else
             echo "Status: $STATE, waiting..."
