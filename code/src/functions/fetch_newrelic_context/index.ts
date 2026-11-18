@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { client, publicSDK } from '@devrev/typescript-sdk';
 import axios from 'axios';
 
@@ -7,7 +7,7 @@ import { issuePermalink, parseIssueReference } from '../external-system/links';
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
 
 interface ContextEvent {
-  payload: { action: { id: string; value: string }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
+  payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
   context: { secrets: { actor_session_token: string; service_account_token?: string }; snap_in_id: string };
   execution_metadata: { devrev_endpoint: string; request_id?: string };
   input_data?: { keyrings?: Record<string, string>; resources?: { keyrings?: Record<string, { secret?: string; is_expired?: boolean } | string> } };
@@ -19,6 +19,31 @@ class ContextActionError extends Error {
 
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
+function actionTimestamp(value: unknown): string | undefined {
+  // The browser sends ISO timestamps; Snap-kit events can use Unix seconds.
+  const milliseconds = typeof value === 'number' && Number.isFinite(value)
+    ? (value < 1e11 ? value * 1000 : value)
+    : typeof value === 'string' && value.length <= 64 && /^\d{4}-\d{2}-\d{2}T/.test(value) ? Date.parse(value) : NaN;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0 || milliseconds > 8640000000000000) return undefined;
+  return new Date(Math.round(milliseconds)).toISOString();
+}
+
+function requestIdentity(event: ContextEvent, issueId: string): string {
+  if (nonEmpty(event.payload.request_id)) return event.payload.request_id;
+  const timestamp = actionTimestamp(event.payload.action.timestamp);
+  if (timestamp) {
+    // A retry can receive a different execution ID. Keep the original click's
+    // identity stable, scoped to its issue, actor and requested window.
+    const actorId = nonEmpty(event.payload.actor_id) ? event.payload.actor_id : null;
+    return `click:${JSON.stringify([issueId, actorId, event.payload.action.id, event.payload.action.value, timestamp])}`;
+  }
+  if (nonEmpty(event.execution_metadata.request_id)) return event.execution_metadata.request_id;
+  // Correlation metadata is not authorization. Its absence must not block an
+  // otherwise valid action. Without it we cannot deduplicate across deliveries.
+  console.info('[newrelic-context] request:generated');
+  return `generated:${randomUUID()}`;
+}
+
 function validateEvent(input: unknown): ContextEvent {
   const event = input as ContextEvent | undefined;
   const objectId = event?.payload?.context?.object_id;
@@ -28,16 +53,13 @@ function validateEvent(input: unknown): ContextEvent {
   if (nonEmpty(objectId) && nonEmpty(parentId) && objectId !== parentId) {
     throw new ContextActionError('conflicting_issue', 'The action contains conflicting issue IDs. Refresh the issue and retry.');
   }
-  const payloadRequestId = event?.payload?.request_id;
-  const requestId = nonEmpty(payloadRequestId) ? payloadRequestId : event?.execution_metadata?.request_id;
-  if (!nonEmpty(requestId)) throw new ContextActionError('missing_request', 'The action is missing its request ID. Refresh the issue and retry.');
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
   if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent'].includes(event.payload.action.value)) {
     throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
   }
-  return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestId } };
+  return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
 }
 
 async function contextKey(event: ContextEvent): Promise<string> {
