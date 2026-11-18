@@ -190,6 +190,12 @@ bounded queries, sampled spans, partial failures, secret scrubbing, historical
 source links and idempotent comment delivery. All use mocked APIs; deployment,
 UI rendering, permissions and queries must also be checked in a live organization.
 
+Every manifest function must have a matching `code/src/functions/<function-name>/index.ts`
+and be registered in `function-factory.ts`. The context action is packaged at
+`dist/functions/fetch_newrelic_context/index.js`; directory names must match the
+manifest exactly. A factory entry alone does not satisfy DevRev's source-function
+validation. See the [DevRev function layout reference](https://developer.devrev.ai/snapin-development/references/functions).
+
 For local development, copy `code/.env.example` to `code/.env`, set the DevRev
 organization/email and `NEW_RELIC_API_KEY`, and use the fixtures under
 `code/fixtures`. Replace the fixture account ID `1234567` with an account you can

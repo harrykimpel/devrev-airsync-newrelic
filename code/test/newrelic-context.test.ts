@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { client } from '@devrev/typescript-sdk';
 
-import run from '../src/functions/fetch-newrelic-context';
-import { planContext, redact, renderContext, traceSpansQuery } from '../src/functions/fetch-newrelic-context/context';
+import run from '../src/functions/fetch_newrelic_context';
+import { planContext, redact, renderContext, traceSpansQuery } from '../src/functions/fetch_newrelic_context/context';
 import { issuePermalink, parseIssueReference } from '../src/functions/external-system/links';
 import { HttpClient } from '../src/functions/external-system/http-client';
 
