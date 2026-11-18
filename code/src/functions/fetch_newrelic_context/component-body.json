@@ -53,6 +53,19 @@
               "text": { "type": "plain_text", "text": "Fetch latest evidence" }
             }
           ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "github",
+              "text": { "type": "plain_text", "text": "Create GitHub issue" }
+            }
+          ]
         }
       ]
     }

@@ -7,6 +7,7 @@ import { issuePermalink, parseIssueReference } from '../external-system/links';
 import { NewRelicIssue } from '../external-system/types';
 import { AnalysisError, analysisPrompt, configuredAgent, RESPONSE_SOURCE, Snapshot, startAnalysis } from './analysis';
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
+import { handoffGitHub } from './github-handoff';
 
 interface ContextEvent {
   payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
@@ -58,7 +59,7 @@ function validateEvent(input: unknown): ContextEvent {
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
-  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence'].includes(event.payload.action.value)) {
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github'].includes(event.payload.action.value)) {
     throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
   }
   return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
@@ -121,8 +122,8 @@ async function collectSnapshot(newrelic: HttpClient, accountId: string, issue: N
 async function handleEvent(input: unknown) {
   const event = validateEvent(input);
   console.info('[newrelic-context] fetch:validated');
-  const key = await contextKey(event);
-  console.info('[newrelic-context] connection:ready');
+  const key = event.payload.action.value === 'github' ? '' : await contextKey(event);
+  if (key) console.info('[newrelic-context] connection:ready');
   const actorToken = event.context.secrets.actor_session_token;
   // Authorize the issue as the clicking user before any telemetry or bot writes.
   const devrev = client.setup({ endpoint: event.execution_metadata.devrev_endpoint, token: actorToken });
@@ -136,20 +137,28 @@ async function handleEvent(input: unknown) {
   const source = parseIssueReference(reference ?? '');
   const recordId = work.sync_metadata?.external_record_id;
   if (recordId && recordId !== `${source.accountId}:${source.issueId}`) throw new Error('The source link does not match this issue’s AirSync record ID. Re-sync the issue.');
+  const sourceUrl = issuePermalink(source.accountId, source.issueId, source.region);
+  const requestHash = createHash('sha256').update(`${event.context.snap_in_id}:${event.payload.request_id}`).digest('hex');
   const evidenceOnly = ['evidence', 'recent_evidence'].includes(event.payload.action.value);
+  const github = event.payload.action.value === 'github';
   const mode = ['recent', 'recent_evidence'].includes(event.payload.action.value) ? 'recent' : 'alert';
-  const agentId = evidenceOnly ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
+  const agentId = evidenceOnly || github ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
   const eventSource = event.input_data?.event_sources?.[RESPONSE_SOURCE];
   const serviceToken = event.context.secrets.service_account_token;
   const serviceAccountId = event.context.service_account_id;
   if (!evidenceOnly && (!nonEmpty(eventSource) || !nonEmpty(serviceToken) || !nonEmpty(serviceAccountId))) {
     throw new AnalysisError('missing_analysis_context', 'The snap-in is missing its analysis response event source or service context. Upgrade the current installation with the analysis manifest.');
   }
+  if (github) {
+    return handoffGitHub({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
+      serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
+      snapInId: event.context.snap_in_id, issue: work, sourceUrl, requestHash,
+      agentValue: event.input_data?.global_values?.github_issue_agent_id,
+      repositoryValue: event.input_data?.global_values?.github_issue_repository });
+  }
   const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
   const issue = await newrelic.getIssue(source.accountId, source.issueId, Date.parse(work.created_date ?? ''));
   const now = Date.now();
-  const sourceUrl = issuePermalink(source.accountId, source.issueId, source.region);
-  const requestHash = createHash('sha256').update(`${event.context.snap_in_id}:${event.payload.request_id}`).digest('hex');
   if (!evidenceOnly) {
     const snapshots = await Promise.all((['alert', 'recent'] as const).map((window) => collectSnapshot(newrelic, source.accountId, issue, window, now)));
     return startAnalysis({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,

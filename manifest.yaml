@@ -39,7 +39,7 @@ functions:
   - name: initialize_newrelic_context
     description: Initialize the New Relic context issue component
   - name: complete_newrelic_analysis
-    description: Complete an internal analysis comment when the DevRev agent responds
+    description: Complete an internal analysis or GitHub issue comment when a DevRev agent responds
 
 inputs:
   organization:
@@ -50,6 +50,20 @@ inputs:
       default_value: ""
       ui:
         display_name: Incident analysis agent ID
+    - name: github_issue_agent_id
+      description: Full DON of a published internal agent with GitHub MCP issue search, read and create skills. Invoked only by Create GitHub issue.
+      field_type: text
+      is_required: false
+      default_value: ""
+      ui:
+        display_name: GitHub issue agent ID
+    - name: github_issue_repository
+      description: Target repository as owner/repository. Match the repository allowed by the GitHub agent and its MCP connection.
+      field_type: text
+      is_required: false
+      default_value: ""
+      ui:
+        display_name: GitHub issue repository
 
 event_sources:
   organization:
@@ -134,6 +148,16 @@ snap_components:
                   text:
                     type: plain_text
                     text: Fetch latest evidence
+            - type: actions
+              direction: row
+              elements:
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: github
+                  text:
+                    type: plain_text
+                    text: Create GitHub issue
 
 keyring_types:
   - id: newrelic-user-key
