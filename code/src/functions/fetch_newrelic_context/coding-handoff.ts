@@ -32,7 +32,7 @@ export async function handoffCoding(options: {
   // link, a pending handoff, or a PR accidentally presented as an issue.
   const completed = entries.filter((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id &&
     entry.visibility === 'internal' && entry.created_by?.id === options.serviceAccountId &&
-    /^newrelic-github:[a-f0-9]{64}:[a-f0-9]{64}$/.test(entry.external_ref ?? '') &&
+    /^newrelic-github:[a-f0-9]{64}(?::[a-f0-9]{64})?$/.test(entry.external_ref ?? '') &&
     'body' in entry && typeof entry.body === 'string' && entry.body.startsWith(GITHUB_RESULT_PREFIX))
     .sort((a, b) => Date.parse(b.modified_date ?? b.created_date ?? '') - Date.parse(a.modified_date ?? a.created_date ?? ''))[0];
   const match = completed && 'body' in completed && typeof completed.body === 'string'
@@ -66,10 +66,16 @@ export async function handoffCoding(options: {
   const requestHash = options.operation === 'start' ? createHash('sha256')
     .update(JSON.stringify([repository.toLowerCase(), issueNumber, provider.id])).digest('hex') : options.requestHash;
   const coding = { repository, issue_number: issueNumber, provider: provider.id, operation: options.operation };
-  const reference = analysisReference({ connector: 'newrelic-coding-v1', snap_in_id: options.snapInId, issue_id: options.issue.id,
-    agent_id: agentId, request_hash: requestHash, source_url: options.sourceUrl, coding });
+  const binding = { connector: 'newrelic-coding-v2' as const, snap_in_id: options.snapInId, issue_id: options.issue.id,
+    agent_id: agentId, request_hash: requestHash, source_url: options.sourceUrl, coding };
+  const reference = analysisReference(binding);
+  // Retain reservations written by 1.4.0. The verified GitHub URL preserves
+  // the repository's canonical spelling even if configuration casing changed.
+  const canonicalRepository = new URL(issueUrl).pathname.split('/').slice(1, 3).join('/');
+  const references = [reference, ...[repository, canonicalRepository].map((spelling) => analysisReference({ ...binding,
+    connector: 'newrelic-coding-v1', coding: { ...coding, repository: spelling } }))];
   if (entries.some((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id && entry.visibility === 'internal' &&
-    entry.created_by?.id === options.serviceAccountId && entry.external_ref === reference)) {
+    entry.created_by?.id === options.serviceAccountId && references.includes(entry.external_ref ?? ''))) {
     return { status: 'success', detail: 'This coding request was already submitted. Use Check coding progress to retrieve its status without starting another run.' };
   }
   return startAnalysis({ ...options, requestHash, issueId: options.issue.id, agentId, prompt,

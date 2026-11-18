@@ -29,6 +29,11 @@ if (command === 'snap_in_package create-one') { console.log(JSON.stringify({snap
 if (command === 'snap_in_package delete-one') { console.log('cleaned'); process.exit(0); }
 if (command === 'snap_in_version create-one') {
   console.log('> build\\n> prepackage\\n> package\\ndist/index.js');
+  if (mode === 'version-multiline-error') { console.log('\\x1b[31m' + JSON.stringify({debug_message:'invalid scope',message:'Bad Request',type:'bad_request'},null,2) + '\\x1b[0m'); console.log('Script footer'); process.exit(0); }
+  if (mode === 'version-multiline' || mode === 'version-multiline-array') {
+    const value = {snap_in_version:{id:${JSON.stringify(versionId)},manifest:'quoted "value" and braces { inside text }'}};
+    console.log(JSON.stringify(mode.endsWith('array') ? [value] : value,null,2)); console.log('Script footer'); process.exit(0);
+  }
   if (mode === 'version-json-zero') { console.log('\\x1b[31m' + JSON.stringify({debug_message:'following scopes do not exist: [comment:write]',message:'Bad Request',type:'bad_request'}) + '\\x1b[0m'); process.exit(0); }
   if (mode === 'version-nonzero') { console.error('version creation failed'); process.exit(7); }
   if (mode === 'version-missing-id') { console.log('{}'); process.exit(0); }
@@ -55,6 +60,7 @@ if (command === 'snap_in_version list') {
   console.log('[]'); process.exit(0);
 }
 if (command === 'snap_in_version show') {
+  if (mode === 'show-multiline-error') { console.log('Status logs'); console.log(JSON.stringify({message:'read denied',type:'forbidden'},null,2)); console.log('End logs'); process.exit(0); }
   if (mode === 'show-error') { console.log(JSON.stringify({message:'read denied',type:'forbidden'})); process.exit(0); }
   if (mode === 'build-failed') { console.log(JSON.stringify({snap_in_version:{state:'build_failed',failure_reason:'test build failed'}})); process.exit(0); }
   console.log(JSON.stringify({snap_in_version:{state:'ready'}})); process.exit(0);
@@ -94,7 +100,7 @@ function run(mode: string) {
   return { ...result, calls };
 }
 
-test.each(['version-json-zero', 'version-nonzero', 'version-missing-id'])('fails %s and preserves the package for inspection', (mode) => {
+test.each(['version-json-zero', 'version-nonzero', 'version-missing-id', 'version-multiline-error'])('fails %s and preserves the package for inspection', (mode) => {
   const result = run(mode);
   expect(result.status).toBe(1);
   expect(result.stdout).toContain(mode === 'version-missing-id' ? 'Failed to get a unique version ID' : 'Failed to create snap-in version');
@@ -123,7 +129,7 @@ test.each(['recover-error', 'recover-nonzero', 'recover-ambiguous', 'recover-wro
   expect(result.calls.some((args) => args[1] === 'draft' || args[1] === 'activate' || args[1] === 'delete-one')).toBe(false);
 });
 
-test.each(['show-error', 'build-failed'])('preserves the existing version and package after %s', (mode) => {
+test.each(['show-error', 'build-failed', 'show-multiline-error'])('preserves the existing version and package after %s', (mode) => {
   const result = run(mode);
   expect(result.status).toBe(1);
   expect(result.stdout).toContain('Package retained for inspection');
@@ -134,6 +140,14 @@ test('reads a long create response with an escaped manifest and Unicode, without
   const result = run('long-json');
   expect(result.status).toBe(0);
   expect(result.calls.some((args) => args[0] === 'snap_in_version' && args[1] === 'list')).toBe(false);
+  expect(result.stdout).toContain('Lambda deployment complete');
+});
+
+test.each(['version-multiline', 'version-multiline-array'])('parses complete multiline JSON surrounded by logs without version recovery (%s)', (mode) => {
+  const result = run(mode);
+  expect(result.status).toBe(0);
+  expect(result.calls.some((args) => args[0] === 'snap_in_version' && args[1] === 'list')).toBe(false);
+  expect(result.calls).toContainEqual(['snap_in', 'draft', '--snap_in_version', versionId]);
   expect(result.stdout).toContain('Lambda deployment complete');
 });
 

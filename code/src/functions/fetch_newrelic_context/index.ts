@@ -134,7 +134,7 @@ async function handleEvent(input: unknown) {
     work = (await devrev.worksGet({ id: event.payload.context.object_id }, { timeout: 10000 })).data.work;
   } catch (error) { throw devRevFailure('works.get', error); }
   console.info('[newrelic-context] issue:loaded');
-  if (work.type !== 'issue' || work.id !== event.payload.context.object_id) throw new Error('Fetch New Relic context is available only on the selected issue.');
+  if (work.type !== 'issue' || (work.id !== event.payload.context.object_id && work.display_id !== event.payload.context.object_id)) throw new Error('Fetch New Relic context is available only on the selected issue.');
   const reference = work.sync_metadata?.external_reference ?? work.body?.match(/\[Open in New Relic\]\(<([^>]+)>\)/)?.[1];
   const source = parseIssueReference(reference ?? '');
   const recordId = work.sync_metadata?.external_record_id;

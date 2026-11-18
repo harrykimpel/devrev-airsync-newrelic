@@ -3,7 +3,7 @@ import { client } from '@devrev/typescript-sdk';
 
 import fetchContext from '../src/functions/fetch_newrelic_context';
 import complete from '../src/functions/complete_newrelic_analysis';
-import { RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
+import { analysisReference, RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
 import { githubResult } from '../src/functions/fetch_newrelic_context/github-policy';
 import { HttpClient } from '../src/functions/external-system/http-client';
 import { issuePermalink } from '../src/functions/external-system/links';
@@ -26,6 +26,7 @@ const assigned = { status: 'assigned', provider: 'copilot', issue_url: issueRepo
 const pr = { ...assigned, status: 'pull_request', pr_number: 166, pr_url: `https://github.com/${repository}/pull/166`, pr_state: 'open', draft: true };
 let githubEntry: Record<string, any>;
 let comments: Record<string, any>[];
+let records: Map<string, Record<string, any>>;
 
 function click(value = 'coding') {
   return { payload: { action: { id: 'fetch_newrelic_context', value, timestamp: '2026-11-18T10:00:00Z' }, context: { object_id: issueId }, actor_id: 'user-1' },
@@ -53,17 +54,24 @@ beforeEach(() => {
     created_by: { id: botId }, created_date: new Date(now - 1000).toISOString(),
     external_ref: 'newrelic-github:' + 'a'.repeat(64) + ':' + 'b'.repeat(64), body: githubResult(JSON.stringify(issueReport), repository) };
   comments = [];
+  records = new Map();
   (client.setup as jest.Mock).mockImplementation(({ token }) => token === 'actor-token' ? actor : bot);
   (client.setupBeta as jest.Mock).mockReturnValue(agent);
   actor.worksGet.mockResolvedValue({ data: { work: { id: issueId, type: 'issue', title: 'Latency', sync_metadata: { external_reference: sourceUrl, external_record_id: '123:source-issue' } } } });
   actor.timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: [githubEntry, ...comments] } }));
   bot.timelineEntriesCreate.mockImplementation(async (request) => {
+    if (request.visibility === 'private') {
+      if (records.has(request.external_ref)) throw { isAxiosError: true, response: { status: 409 } };
+      const entry = { ...request, id: issueId + ':comment/record-' + records.size, created_by: { id: botId }, created_date: new Date(now).toISOString() };
+      records.set(request.external_ref, entry);
+      return { data: { timeline_entry: entry } };
+    }
     if (comments.some((entry) => entry.external_ref === request.external_ref)) throw { isAxiosError: true, response: { status: 409 } };
     const entry = { ...request, id: issueId + ':comment/coding-' + comments.length, created_by: { id: botId }, created_date: new Date(now).toISOString() };
     comments.push(entry);
     return { data: { timeline_entry: entry } };
   });
-  bot.timelineEntriesGet.mockImplementation(async ({ id }) => ({ data: { timeline_entry: comments.find((entry) => entry.id === id) } }));
+  bot.timelineEntriesGet.mockImplementation(async ({ id, external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref) : comments.find((entry) => entry.id === id) } }));
   bot.timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: comments } }));
   bot.timelineEntriesUpdate.mockImplementation(async ({ id, body }) => {
     const entry = comments.find((entry) => entry.id === id)!;
@@ -82,7 +90,7 @@ test('starts Copilot through the existing agent using only the verified issue an
   expect(HttpClient.prototype.nrql).not.toHaveBeenCalled();
   const request = agent.aiAgentEventsExecuteAsync.mock.calls[0][0];
   expect(request.agent).toBe(agentId);
-  expect(request.client_metadata).toMatchObject({ connector: 'newrelic-coding-v1', coding: { repository, issue_number: 165, provider: 'copilot', operation: 'start' } });
+  expect(request.client_metadata).toMatchObject({ connector: 'newrelic-coding-v2', coding: { repository, issue_number: 165, provider: 'copilot', operation: 'start' } });
   const prompt = request.event.input_message.message;
   const input = JSON.parse(prompt.split('\nINPUT\n')[1]);
   expect(input).toMatchObject({ operation: 'coding_start', repository, provider: 'copilot', issue_number: 165, issue_url: issueReport.url,
@@ -196,8 +204,8 @@ test.each(['not JSON', '{"status":"error"}', JSON.stringify({ ...pr, pr_url: 'ht
 
 test('keeps an uncertain Start reserved after an agent transport error and permits a status check', async () => {
   agent.aiAgentEventsExecuteAsync.mockRejectedValueOnce({ secret: 'actor-token' });
-  await expect(fetchContext([click()])).rejects.toThrow('Could not start the DevRev agent');
-  expect(comments[0].body).toContain('Coding agent request unavailable');
+  await expect(fetchContext([click()])).rejects.toThrow('Could not start or confirm');
+  expect(comments[0].body).toContain('Coding agent requested');
   await fetchContext([click()]);
   expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
   await fetchContext([click('coding_status')]);
@@ -220,4 +228,25 @@ test('an errored agent callback cannot publish a success-shaped PR message', asy
   await complete([event]);
   expect(comments[0].body).toContain('Coding agent request unavailable');
   expect(comments[0].body).not.toContain('[PR #166]');
+});
+
+test.each([false, true])('repository casing changes reuse a reserved Start (legacy reservation: %s)', async (legacy) => {
+  await fetchContext([click()]);
+  if (legacy) {
+    const metadata = agent.aiAgentEventsExecuteAsync.mock.calls[0][0].client_metadata;
+    comments[0].external_ref = analysisReference({ ...metadata, connector: 'newrelic-coding-v1' });
+  }
+  const input = click();
+  input.input_data.global_values.github_issue_repository = repository.toLowerCase();
+  await fetchContext([input]);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  expect(comments).toHaveLength(1);
+});
+
+test('a coding callback remains valid after a casing-only configuration edit', async () => {
+  await fetchContext([click()]);
+  const event = response();
+  event.input_data.global_values.github_issue_repository = repository.toLowerCase();
+  await complete([event]);
+  expect(comments[0].body).toContain('[PR #166]');
 });

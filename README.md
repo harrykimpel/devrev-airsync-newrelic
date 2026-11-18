@@ -139,9 +139,10 @@ Only a structured `created`/`existing` report with a matching issue number and
 HTTPS GitHub issue URL in that repository becomes a linked result. This validates
 the agent's report; real tool execution and search-first duplicate avoidance must
 be verified in the target agent/MCP setup. Search and create are not atomic.
-The parser accepts prose/code fences around one JSON report and Markdown links
-in its URL field, then validates the link destination. Ambiguous multiple reports
-and mismatched repositories or issue numbers are rejected.
+The parser accepts prose/code fences around one JSON object and Markdown links
+in its URL field, then validates the link destination. Arrays, incomplete outer
+containers, ambiguous multiple reports and mismatched repositories or issue
+numbers are rejected.
 
 For analysis, follow the [New Relic Incident Analyst setup guide](docs/NEW_RELIC_INCIDENT_ANALYST.md)
 for the copy-paste goal, instructions, Playground checks and connector settings.
@@ -177,6 +178,17 @@ request lifetime before replacing the pending comment. It cannot post an
 unsolicited comment on another issue. Progress events and repeated terminal
 deliveries are ignored. Agent failures become a concise failure notice, with
 evidence buttons available for investigation.
+
+Starting in 1.4.1, a failed/timed-out start response leaves the request pending:
+the asynchronous agent may already be running and can still return a verified
+result. Callbacks persist an immutable private result record owned by the bot
+using DevRev's unique timeline external reference. Concurrent callbacks and
+update retries publish the same stored winner, so a late error cannot overwrite
+a published successful result. The first persisted terminal result wins, which
+can also be an agent failure. GitHub requests additionally persist their winning
+source-brief binding privately before dispatch; the click's uniqueness key does
+not depend on which brief was selected. These records introduce no new connection
+or permission requirement. See the [review decisions](docs/COPILOT_REVIEW_FOLLOWUPS.md).
 
 The agent prompt stays below 16,384 characters. Per-section samples and rows may
 be further omitted or truncated for that budget; omissions and query failures
