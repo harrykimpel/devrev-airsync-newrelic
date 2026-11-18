@@ -76,12 +76,23 @@ Open an imported issue and find the **New Relic context** component:
 
 The component declares `initialize_newrelic_context` as its initializer. This
 function returns the snap-kit controls when DevRev initializes the issue
-component. It does not query telemetry or post comments; those actions run only
+component. Its response includes `snap_kit_body.snap_in_id` from the current
+invocation and `snap_kit_body.snap_in_action_name: fetch_newrelic_context`, in
+addition to the UI body. This binds the controls to the installed action; package
+and version IDs must not be used as the installation ID. It does not query
+telemetry or post comments; those actions run only
 through `fetch_newrelic_context` after a button is clicked. A static
 `snap_kit_body` alone does not satisfy the issue component's initialization flow.
 For an installation that already has the context connection, apply this change
 with `npm run upgrade -- '<current-snap-in-version-id>'` from `code/`, then refresh
 the issue view. This initializer fix adds no connections or required scopes.
+
+If opening the context window fails with `mongo: no documents in result`, the
+message alone does not identify the missing record. Check the failing browser
+Network request and the initializer invocation in the snap-in logs to distinguish
+an initialization/action lookup failure from telemetry execution. Share only URL
+paths and relevant IDs/action names, without authorization headers, cookies or
+tokens. Refresh the issue after upgrading so it loads the current component.
 
 - **Fetch New Relic context** queries 15 minutes before/after alert creation,
   clipping the end to the current time.
