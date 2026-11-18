@@ -9,7 +9,7 @@ import { HttpClient } from '../src/functions/external-system/http-client';
 jest.mock('axios');
 jest.mock('@devrev/typescript-sdk', () => ({
   ...jest.requireActual('@devrev/typescript-sdk'),
-  client: { setup: jest.fn() },
+  client: { setup: jest.fn(), setupBeta: jest.fn() },
 }));
 
 const now = Date.parse('2026-11-17T12:00:00Z');
@@ -18,6 +18,7 @@ const post = jest.fn();
 const worksGet = jest.fn();
 const timelineEntriesCreate = jest.fn();
 const timelineEntriesList = jest.fn();
+const snapInsResources = jest.fn();
 function event(region: 'US' | 'EU' = 'US') {
   return {
     payload: { action: { id: 'fetch_newrelic_context', value: 'alert' }, context: { object_id: 'ISS-1' }, request_id: 'click-1' },
@@ -32,10 +33,13 @@ const graph = (data: object) => ({ data: { data: { actor: { account: data } } } 
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(console, 'info').mockImplementation(() => undefined);
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
   jest.spyOn(Date, 'now').mockReturnValue(now);
   (axios.create as jest.Mock).mockReturnValue({ post });
   (axios.isAxiosError as unknown as jest.Mock).mockImplementation((e) => e?.isAxiosError === true);
   (client.setup as jest.Mock).mockReturnValue({ worksGet, timelineEntriesCreate, timelineEntriesList });
+  (client.setupBeta as jest.Mock).mockReturnValue({ snapInsResources });
+  snapInsResources.mockResolvedValue({ data: { keyrings: { newrelic_context: { id: 'keyring-1', is_expired: false, secret: 'private-nr-key' } } } });
   worksGet.mockResolvedValue({ data: { work: sourceWork() } });
   timelineEntriesCreate.mockResolvedValue({ data: {} });
   timelineEntriesList.mockImplementation(async () => ({ data: { timeline_entries: [{ type: 'timeline_comment', visibility: 'internal', external_ref: timelineEntriesCreate.mock.calls[0][0].external_ref }] } }));
@@ -52,6 +56,7 @@ test.each(['US', 'EU'] as const)('fetches scoped metrics, logs and trace samples
   expect(console.info).toHaveBeenLastCalledWith('[newrelic-context] fetch:complete');
   expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token/);
   expect(client.setup).toHaveBeenCalledWith({ endpoint: 'https://api.devrev.ai', token: 'actor-token' });
+  expect(client.setupBeta).not.toHaveBeenCalled();
   expect(axios.create).toHaveBeenCalledWith(expect.objectContaining({ baseURL: region === 'EU' ? 'https://api.eu.newrelic.com/graphql' : 'https://api.newrelic.com/graphql', maxRedirects: 0, timeout: 10000 }));
   expect(post).toHaveBeenCalledTimes(4);
   expect(post.mock.calls[0][1]).toMatchObject({ query: expect.stringContaining('ids: ["source-issue"]'), variables: { accountId: 123 } });
@@ -125,6 +130,86 @@ test('supports resource-style keyring delivery', async () => {
   const input = event();
   const resourceInput = { ...input, input_data: { resources: { keyrings: { newrelic_context: { secret: 'private-nr-key' } } } } };
   await expect(run([resourceInput])).resolves.toMatchObject({ status: 'success' });
+  expect(snapInsResources).not.toHaveBeenCalled();
+});
+
+test.each([undefined, {}, { keyrings: { newrelic_context: '' } }, { resources: { keyrings: {} } }])('loads the clicking user’s configured connection when the event omits its secret (%j)', async (inputData) => {
+  const input = { ...event(), payload: { ...event().payload, actor_id: 'user-who-clicked' }, input_data: inputData };
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  expect(client.setupBeta).toHaveBeenCalledWith({ endpoint: 'https://api.devrev.ai', token: 'bot-token' });
+  expect(snapInsResources).toHaveBeenCalledWith({ id: 'snap-1', user: 'user-who-clicked' }, { timeout: 10000 });
+  expect(client.setup).toHaveBeenCalledWith({ endpoint: 'https://api.devrev.ai', token: 'actor-token' });
+  expect(worksGet).toHaveBeenCalledWith({ id: 'ISS-1' }, { timeout: 10000 });
+  expect(timelineEntriesCreate).toHaveBeenCalledTimes(1);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] connection:lookup');
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] connection:ready');
+  expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token|user-who-clicked/);
+});
+
+test.each(['missing actor ID', 'missing service token', 'missing actor token'])('does not look up another user’s resources or substitute bot access when %s', async (failure) => {
+  const input = { ...event(), payload: { ...event().payload, actor_id: 'user-who-clicked' }, input_data: {} };
+  if (failure === 'missing actor ID') input.payload.actor_id = '';
+  if (failure === 'missing service token') input.context.secrets.service_account_token = '';
+  if (failure === 'missing actor token') input.context.secrets.actor_session_token = '';
+  await expect(run([input])).rejects.toThrow();
+  expect(snapInsResources).not.toHaveBeenCalled();
+  expect(worksGet).not.toHaveBeenCalled();
+  expect(post).not.toHaveBeenCalled();
+  expect(timelineEntriesCreate).not.toHaveBeenCalled();
+});
+
+test.each(['missing', 'empty', 'expired', 'lookup denied'])('reports a safe connection failure for %s resources without reading the issue', async (failure) => {
+  const input = { ...event(), payload: { ...event().payload, actor_id: 'user-who-clicked' }, input_data: {} };
+  if (failure === 'missing') snapInsResources.mockResolvedValue({ data: { keyrings: {} } });
+  if (failure === 'empty') snapInsResources.mockResolvedValue({ data: { keyrings: { newrelic_context: { secret: ' ' } } } });
+  if (failure === 'expired') snapInsResources.mockResolvedValue({ data: { keyrings: { newrelic_context: { secret: 'private-nr-key', is_expired: true } } } });
+  if (failure === 'lookup denied') snapInsResources.mockRejectedValue({ isAxiosError: true, response: { status: 403, data: 'private-nr-key' }, config: { headers: { authorization: 'bot-token' } } });
+  await expect(run([input])).rejects.toThrow(/My Settings/);
+  expect(worksGet).not.toHaveBeenCalled();
+  expect(post).not.toHaveBeenCalled();
+  expect(timelineEntriesCreate).not.toHaveBeenCalled();
+  expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/^\[newrelic-context\] fetch:failed code=connection_(missing|expired|lookup_failed)$/));
+  expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token|user-who-clicked/);
+});
+
+test('does not use an expired injected user connection', async () => {
+  const input = { ...event(), input_data: { resources: { keyrings: { newrelic_context: { secret: 'private-nr-key', is_expired: true } } } } };
+  await expect(run([input])).rejects.toThrow('Reauthorize');
+  expect(worksGet).not.toHaveBeenCalled();
+  expect(snapInsResources).not.toHaveBeenCalled();
+});
+
+test('accepts the parent issue field from DevRev’s Snap-kit example and the invocation request ID', async () => {
+  const original = event();
+  const input = {
+    ...original,
+    payload: { ...original.payload, context: { parent_core_object_id: 'ISS-1' }, request_id: '' },
+    execution_metadata: { ...original.execution_metadata, request_id: 'invocation-1' },
+  };
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  expect(worksGet).toHaveBeenCalledWith({ id: 'ISS-1' }, { timeout: 10000 });
+  const reference = timelineEntriesCreate.mock.calls[0][0].external_ref;
+  await run([input]);
+  expect(timelineEntriesCreate.mock.calls[1][0].external_ref).toBe(reference);
+  input.execution_metadata.request_id = 'invocation-2';
+  await run([input]);
+  expect(timelineEntriesCreate.mock.calls[2][0].external_ref).not.toBe(reference);
+});
+
+test('rejects ambiguous parent issue IDs before obtaining credentials', async () => {
+  const input = { ...event(), payload: { ...event().payload, context: { object_id: 'ISS-1', parent_core_object_id: 'ISS-2' } } };
+  await expect(run([input])).rejects.toThrow('conflicting issue IDs');
+  expect(snapInsResources).not.toHaveBeenCalled();
+  expect(worksGet).not.toHaveBeenCalled();
+  expect(console.error).toHaveBeenCalledWith('[newrelic-context] fetch:failed code=conflicting_issue');
+});
+
+test('identifies the missing field with a fixed log code without echoing malformed event values', async () => {
+  const input = { ...event(), payload: { ...event().payload, context: { object_id: { secret: 'private-nr-key' } } } };
+  await expect(run([input])).rejects.toThrow('from a DevRev issue');
+  expect(console.error).toHaveBeenCalledWith('[newrelic-context] fetch:failed code=missing_issue');
+  expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toContain('private-nr-key');
+  expect(worksGet).not.toHaveBeenCalled();
 });
 
 test.each(['missing connection', 'missing actor', 'invalid action', 'invalid window'])('rejects %s before querying or posting', async (failure) => {

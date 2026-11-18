@@ -108,6 +108,16 @@ tokens, issue bodies or telemetry. A start marker establishes that the function
 was entered; a missing ready/complete marker helps locate an interrupted call.
 Missing logs alone do not prove that a function was never invoked.
 
+The action also logs fixed stage markers `fetch:validated`, `connection:lookup`
+(when it needs to retrieve your saved user connection), `connection:ready`, and
+`issue:loaded`. Failures log `fetch:failed code=…` using fixed codes such as
+`missing_actor_token`, `missing_issue`, `connection_lookup_failed`,
+`connection_missing`, or `connection_expired`. These distinguish invalid action
+context from connection lookup failures without logging credentials, IDs, event
+payloads or raw API errors. `request_failed` means a later operation failed; use
+the preceding stage marker to locate it. A gateway response containing only
+`debug_message: "{}"` does not expose the handler's actual error.
+
 Use DevRev CLI **0.4.16 or newer** for runtime logs. Earlier clients can return
 `501 FetchLogs is deprecated` from the retired logs endpoint. GitHub releases may
 be newer than npm's `latest` tag. After opening the window, query the markers
@@ -126,15 +136,33 @@ of a `snap-components.initialize` database error.
 - **Fetch latest 30 minutes** queries the same affected entities for the most
   recent 30 minutes, useful during an ongoing investigation.
 
-In the snap-in's configuration, select your **New Relic context connection**
-under user connections. You can select an existing New Relic connection you can
+Go to **Settings → Integrations → Snap-ins → New Relic → Configure → My Settings**.
+Turn on **Enable for me**, select the connection under **Connections**, and save.
+The connection description mentions your New Relic user key with access to the
+source alert account. You can select an existing New Relic connection you can
 access, with a **user API key** for the source account and region. AirSync's
 `connection_data` is only delivered to extraction events; an issue action needs
-this separate user connection selection. The action sends this key only to the
+this separate user connection selection. An **Active** connection selected under
+**My Settings**, with **Enable for me** on, satisfies this configuration step;
+do not recreate it solely because the telemetry action fails.
+
+When DevRev does not inject the selected key into the action event, the handler
+retrieves it using [`snap-ins.resources`](https://developer.devrev.ai/snapin-development/references/snap-in-resources)
+for this installation and the clicking user's `payload.actor_id`. Only that
+resource lookup uses the snap-in's service account, as required by DevRev.
+Expired or missing user resources stop the action before any issue or telemetry
+request. The handler accepts both `object_id` and the Snap-kit example's
+`parent_core_object_id` issue context; conflicting IDs are rejected. The payload
+request ID is preferred, with the execution metadata request ID as a fallback.
+
+The action sends this key only to the
 fixed regional NerdGraph endpoint inferred from the source alert link. Grant
 the optional `issue:read` impersonation permission. Timeline entries use their
-parent issue's permissions; DevRev has no separate `comment:write` scope. Both
-DevRev API calls run as the clicking user; the bot cannot bypass an access denial.
+parent issue's permissions; DevRev has no separate `comment:write` scope. Issue
+reads and comment writes run as the clicking user; the bot cannot bypass an
+access denial. This resource-lookup fix changes no manifest connections or
+scopes, so it can be applied to an installation that already has the user
+connection with `npm run upgrade -- '<current-snap-in-version-id>'` from `code/`.
 
 The action loads the exact source issue and its entity GUIDs, then posts an
 **internal discussion comment** containing:
@@ -152,8 +180,10 @@ Alerts without GUIDs produce an explanation instead of an account-wide query.
 Unrelated DevRev issues are rejected. Queries use NerdGraph variables, allowlisted
 identifiers, a five-second NRQL timeout and ten-second HTTP timeouts. The three
 initial telemetry queries run independently, so unavailable logs do not discard
-successful metrics/traces. Delivery retries reuse a unique comment reference;
-clicking again deliberately creates a new snapshot.
+successful metrics/traces. Deliveries with the same request ID reuse a unique
+comment reference; clicking again deliberately creates a new snapshot. If only
+an execution request ID is available, deduplication covers that invocation;
+a retry assigned a new execution request ID can create another comment.
 
 Only selected attributes are fetched. Common credentials and email addresses,
 including the active API/session keys, are scrubbed before posting; output rows

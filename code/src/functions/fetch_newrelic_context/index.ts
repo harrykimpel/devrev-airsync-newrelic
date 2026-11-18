@@ -7,20 +7,68 @@ import { issuePermalink, parseIssueReference } from '../external-system/links';
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
 
 interface ContextEvent {
-  payload: { action: { id: string; value: string }; context: { object_id: string }; request_id: string };
-  context: { secrets: { actor_session_token: string }; snap_in_id: string };
-  execution_metadata: { devrev_endpoint: string };
-  input_data: { keyrings?: Record<string, string>; resources?: { keyrings?: Record<string, { secret?: string } | string> } };
+  payload: { action: { id: string; value: string }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
+  context: { secrets: { actor_session_token: string; service_account_token?: string }; snap_in_id: string };
+  execution_metadata: { devrev_endpoint: string; request_id?: string };
+  input_data?: { keyrings?: Record<string, string>; resources?: { keyrings?: Record<string, { secret?: string; is_expired?: boolean } | string> } };
 }
+
+class ContextActionError extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 function validateEvent(input: unknown): ContextEvent {
   const event = input as ContextEvent | undefined;
-  if (!event?.payload?.context?.object_id || !event.payload.request_id || !event.context?.snap_in_id ||
-    !event.context.secrets?.actor_session_token || !event.execution_metadata?.devrev_endpoint || !event.input_data ||
-    event.payload.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent'].includes(event.payload.action.value)) {
-    throw new Error('Run Fetch New Relic context from a DevRev issue while signed in.');
+  const objectId = event?.payload?.context?.object_id;
+  const parentId = event?.payload?.context?.parent_core_object_id;
+  const issueId = nonEmpty(objectId) ? objectId : parentId;
+  if (!nonEmpty(issueId)) throw new ContextActionError('missing_issue', 'Run Fetch New Relic context from a DevRev issue.');
+  if (nonEmpty(objectId) && nonEmpty(parentId) && objectId !== parentId) {
+    throw new ContextActionError('conflicting_issue', 'The action contains conflicting issue IDs. Refresh the issue and retry.');
   }
-  return event;
+  const payloadRequestId = event?.payload?.request_id;
+  const requestId = nonEmpty(payloadRequestId) ? payloadRequestId : event?.execution_metadata?.request_id;
+  if (!nonEmpty(requestId)) throw new ContextActionError('missing_request', 'The action is missing its request ID. Refresh the issue and retry.');
+  if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
+  if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
+  if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent'].includes(event.payload.action.value)) {
+    throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
+  }
+  return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestId } };
+}
+
+async function contextKey(event: ContextEvent): Promise<string> {
+  const resource = event.input_data?.resources?.keyrings?.newrelic_context;
+  const key = event.input_data?.keyrings?.newrelic_context ?? (typeof resource === 'string' ? resource : resource?.secret);
+  if (resource && typeof resource === 'object' && resource.is_expired) {
+    throw new ContextActionError('connection_expired', 'Reauthorize your New Relic connection in the snap-in’s My Settings.');
+  }
+  if (nonEmpty(key)) return key;
+
+  // User keyrings are separate snap-in resources and need not be injected into the event.
+  // This API requires the snap-in's service account. Fetch only the clicking user's
+  // resource on this installation; issue reads/writes still use the actor token.
+  if (!nonEmpty(event.payload.actor_id) || !nonEmpty(event.context.secrets.service_account_token)) {
+    throw new ContextActionError('missing_connection_context', 'The action cannot load your user connection: its actor ID or snap-in service token is missing.');
+  }
+  console.info('[newrelic-context] connection:lookup');
+  const resources = client.setupBeta({ endpoint: event.execution_metadata.devrev_endpoint, token: event.context.secrets.service_account_token });
+  let connection;
+  try {
+    connection = (await resources.snapInsResources({ id: event.context.snap_in_id, user: event.payload.actor_id }, { timeout: 10000 })).data.keyrings?.newrelic_context;
+  } catch {
+    // SDK/Axios errors can contain tokens and response bodies. Do not log or rethrow them.
+    throw new ContextActionError('connection_lookup_failed', 'Could not load your New Relic connection. Open Settings → Integrations → Snap-ins → New Relic → Configure → My Settings, enable it for yourself, select a connection, and save.');
+  }
+  if (connection?.is_expired) throw new ContextActionError('connection_expired', 'Reauthorize your New Relic connection in the snap-in’s My Settings.');
+  const secret = connection?.secret;
+  if (!nonEmpty(secret)) {
+    throw new ContextActionError('connection_missing', 'Select a New Relic connection in the snap-in’s My Settings, turn on Enable for me, and save. Use a user API key with access to this alert account.');
+  }
+  return secret;
 }
 
 function devRevFailure(operation: string, error: unknown): Error {
@@ -31,11 +79,9 @@ function devRevFailure(operation: string, error: unknown): Error {
 
 async function handleEvent(input: unknown) {
   const event = validateEvent(input);
-  const resource = event.input_data.resources?.keyrings?.newrelic_context;
-  const key = event.input_data.keyrings?.newrelic_context ?? (typeof resource === 'string' ? resource : resource?.secret);
-  if (typeof key !== 'string' || !key.trim()) {
-    throw new Error('Select your New Relic context connection in the snap-in configuration (user connection). Use a user API key with access to this alert account.');
-  }
+  console.info('[newrelic-context] fetch:validated');
+  const key = await contextKey(event);
+  console.info('[newrelic-context] connection:ready');
   const actorToken = event.context.secrets.actor_session_token;
   // Both reads and writes run as the clicking user. Never fall back to a more privileged bot.
   const devrev = client.setup({ endpoint: event.execution_metadata.devrev_endpoint, token: actorToken });
@@ -43,6 +89,7 @@ async function handleEvent(input: unknown) {
   try {
     work = (await devrev.worksGet({ id: event.payload.context.object_id }, { timeout: 10000 })).data.work;
   } catch (error) { throw devRevFailure('works.get', error); }
+  console.info('[newrelic-context] issue:loaded');
   if (work.type !== 'issue') throw new Error('Fetch New Relic context is available only on issues.');
   const reference = work.sync_metadata?.external_reference ?? work.body?.match(/\[Open in New Relic\]\(<([^>]+)>\)/)?.[1];
   const source = parseIssueReference(reference ?? '');
@@ -92,8 +139,14 @@ async function handleEvent(input: unknown) {
 
 export default async function run(events: unknown[]) {
   console.info('[newrelic-context] fetch:start');
-  if (events.length !== 1) throw new Error('Expected one issue action event.');
-  const result = await handleEvent(events[0]);
-  console.info('[newrelic-context] fetch:complete');
-  return result;
+  try {
+    if (!Array.isArray(events) || events.length !== 1) throw new ContextActionError('invalid_batch', 'Expected one issue action event.');
+    const result = await handleEvent(events[0]);
+    console.info('[newrelic-context] fetch:complete');
+    return result;
+  } catch (error) {
+    // Only fixed, locally assigned codes are logged, never event data or raw errors.
+    console.error(`[newrelic-context] fetch:failed code=${error instanceof ContextActionError ? error.code : 'request_failed'}`);
+    throw error;
+  }
 }
