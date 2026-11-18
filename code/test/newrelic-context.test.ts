@@ -21,7 +21,7 @@ const timelineEntriesList = jest.fn();
 const snapInsResources = jest.fn();
 function event(region: 'US' | 'EU' = 'US') {
   return {
-    payload: { action: { id: 'fetch_newrelic_context', value: 'alert' }, context: { object_id: 'ISS-1' }, request_id: 'click-1' },
+    payload: { action: { id: 'fetch_newrelic_context', value: 'evidence' }, context: { object_id: 'ISS-1' }, request_id: 'click-1' },
     context: { snap_in_id: 'snap-1', secrets: { actor_session_token: 'actor-token', service_account_token: 'bot-token' } },
     execution_metadata: { devrev_endpoint: 'https://api.devrev.ai' },
     input_data: { keyrings: { newrelic_context: 'private-nr-key' } },
@@ -82,7 +82,7 @@ test('supports historical broken links so existing imports can fetch context bef
 });
 
 test('latest window uses now rather than alert creation time', async () => {
-  const input = event(); input.payload.action.value = 'recent';
+  const input = event(); input.payload.action.value = 'recent_evidence';
   await run([input]);
   expect(post.mock.calls[1][1].variables.query).toContain(`SINCE ${now - 1800000} UNTIL ${now}`);
 });
@@ -249,7 +249,7 @@ test.each(['timestamp', 'issue', 'actor', 'window', 'installation'])('creates a 
     worksGet.mockResolvedValue({ data: { work: { ...sourceWork(), id: 'ISS-2' } } });
   }
   if (changed === 'actor') input.payload.actor_id = 'another-user';
-  if (changed === 'window') input.payload.action.value = 'recent';
+  if (changed === 'window') input.payload.action.value = 'recent_evidence';
   if (changed === 'installation') input.context.snap_in_id = 'snap-2';
   await run([input]);
   expect(timelineEntriesCreate.mock.calls[1][0].external_ref).not.toBe(timelineEntriesCreate.mock.calls[0][0].external_ref);

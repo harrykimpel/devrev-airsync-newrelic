@@ -9,7 +9,7 @@
           "elements": [
             {
               "type": "plain_text",
-              "text": "Fetch telemetry for the alert’s affected entities. Default window is 15 minutes before/after the alert; results are posted as an internal comment."
+              "text": "Analyze the alert window and latest 30 minutes with the incident analyst. The summary appears in the internal discussion. Evidence buttons post the bounded query results separately."
             }
           ]
         },
@@ -23,14 +23,34 @@
               "action_type": "remote",
               "style": "primary",
               "value": "alert",
-              "text": { "type": "plain_text", "text": "Fetch New Relic context" }
+              "text": { "type": "plain_text", "text": "Analyze New Relic context" }
             },
             {
               "type": "button",
               "action_id": "fetch_newrelic_context",
               "action_type": "remote",
               "value": "recent",
-              "text": { "type": "plain_text", "text": "Fetch latest 30 minutes" }
+              "text": { "type": "plain_text", "text": "Analyze latest 30 minutes" }
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "evidence",
+              "text": { "type": "plain_text", "text": "Fetch alert evidence" }
+            },
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "recent_evidence",
+              "text": { "type": "plain_text", "text": "Fetch latest evidence" }
             }
           ]
         }

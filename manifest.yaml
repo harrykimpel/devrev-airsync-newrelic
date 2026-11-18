@@ -21,6 +21,9 @@ service_account:
       - scope: sync_history:read
         optional: false
         reason: Read sync history
+      - scope: issue:read
+        optional: true
+        reason: Create and complete bot-owned internal analysis comments after an authorized user requests telemetry analysis
     impersonate:
       - act_as: all_devusers
         scopes:
@@ -32,9 +35,38 @@ functions:
   - name: extraction
     description: Extract New Relic accounts and alert issues
   - name: fetch_newrelic_context
-    description: Fetch bounded New Relic metrics, logs and trace samples for an issue
+    description: Fetch bounded New Relic telemetry and request DevRev incident analysis or post evidence
   - name: initialize_newrelic_context
     description: Initialize the New Relic context issue component
+  - name: complete_newrelic_analysis
+    description: Complete an internal analysis comment when the DevRev agent responds
+
+inputs:
+  organization:
+    - name: analysis_agent_id
+      description: Full DON of a published internal DevRev agent in this organization. Used by both analysis buttons.
+      field_type: text
+      is_required: false
+      default_value: ""
+      ui:
+        display_name: Incident analysis agent ID
+
+event_sources:
+  organization:
+    - name: newrelic-agent-responses
+      display_name: New Relic analyst responses
+      description: Receives asynchronous DevRev agent results for internal issue analysis
+      type: devrev-webhook
+      config:
+        event_types:
+          - ai_agent_response
+
+automations:
+  - name: complete-newrelic-analysis
+    source: newrelic-agent-responses
+    event_types:
+      - ai_agent_response
+    function: complete_newrelic_analysis
 
 keyrings:
   user:
@@ -46,7 +78,7 @@ keyrings:
 
 snap_kit_actions:
   - name: fetch_newrelic_context
-    description: Fetch New Relic telemetry and post an internal issue comment
+    description: Analyze New Relic telemetry or fetch evidence into an internal issue comment
     function: fetch_newrelic_context
 
 snap_components:
@@ -66,7 +98,7 @@ snap_components:
             - type: content
               elements:
                 - type: plain_text
-                  text: Fetch telemetry for the alert’s affected entities. Default window is 15 minutes before/after the alert; results are posted as an internal comment.
+                  text: Analyze the alert window and latest 30 minutes with the incident analyst. The summary appears in the internal discussion. Evidence buttons post the bounded query results separately.
             - type: actions
               direction: row
               elements:
@@ -77,14 +109,31 @@ snap_components:
                   value: alert
                   text:
                     type: plain_text
-                    text: Fetch New Relic context
+                    text: Analyze New Relic context
                 - type: button
                   action_id: fetch_newrelic_context
                   action_type: remote
                   value: recent
                   text:
                     type: plain_text
-                    text: Fetch latest 30 minutes
+                    text: Analyze latest 30 minutes
+            - type: actions
+              direction: row
+              elements:
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: evidence
+                  text:
+                    type: plain_text
+                    text: Fetch alert evidence
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: recent_evidence
+                  text:
+                    type: plain_text
+                    text: Fetch latest evidence
 
 keyring_types:
   - id: newrelic-user-key
