@@ -70,6 +70,13 @@ incremental sync only refreshes records returned by New Relic; unchanged older
 records may need a historical re-sync. The context action also understands the
 old link format and posts a corrected link in its result comment.
 
+The extracted `body` is a rich-text array (`["Markdown content"]`), as required
+by the external metadata. A bare string causes AirSync's transformer to reject
+and redact the field. After upgrading this normalization fix, re-sync affected
+source records to restore descriptions and visible links. Upgrading the snap-in
+alone does not rewrite bodies already imported; unchanged records may need a
+historical re-sync. See the [normalized rich-text contract](https://developer.devrev.ai/airsync/data-model/rich-text-fields).
+
 ## Fetch New Relic context on an issue
 
 Open an imported issue and find the **New Relic context** component:
@@ -93,6 +100,26 @@ Network request and the initializer invocation in the snap-in logs to distinguis
 an initialization/action lookup failure from telemetry execution. Share only URL
 paths and relevant IDs/action names, without authorization headers, cookies or
 tokens. Refresh the issue after upgrading so it loads the current component.
+
+The initializer now emits `[newrelic-context] initializer:start` and
+`initializer:ready`; the telemetry action emits `fetch:start` and `fetch:complete`.
+These markers contain only fixed stage strings, without event payloads, API keys,
+tokens, issue bodies or telemetry. A start marker establishes that the function
+was entered; a missing ready/complete marker helps locate an interrupted call.
+Missing logs alone do not prove that a function was never invoked.
+
+Use DevRev CLI **0.4.16 or newer** for runtime logs. Earlier clients can return
+`501 FetchLogs is deprecated` from the retired logs endpoint. GitHub releases may
+be newer than npm's `latest` tag. After opening the window, query the markers
+with the newer binary, for example:
+
+```sh
+/tmp/devrev-0.4.16 snap_in_package logs --query newrelic-context --limit 50 --org '<org>' --usr '<email>'
+```
+
+The newer command does not accept the old `--all` flag. AirSync `transformer`
+warnings about `body` describe import validation and do not establish the cause
+of a `snap-components.initialize` database error.
 
 - **Fetch New Relic context** queries 15 minutes before/after alert creation,
   clipping the end to the current time.

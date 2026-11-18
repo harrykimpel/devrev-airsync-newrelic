@@ -14,7 +14,11 @@ jest.mock('@devrev/typescript-sdk', () => ({
 
 const manifest = require('js-yaml').load(readFileSync(join(__dirname, '../../manifest.yaml'), 'utf8'));
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.spyOn(console, 'info').mockImplementation(() => undefined);
+});
+afterEach(() => jest.restoreAllMocks());
 
 const snapInId = 'don:integration:example:devo/test:snap_in/current-installation';
 const initializationEvent = () => ({
@@ -47,6 +51,8 @@ test('renders both actions using the snap-kit response envelope without a button
   ]);
   expect(axios.create).not.toHaveBeenCalled();
   expect(client.setup).not.toHaveBeenCalled();
+  expect(console.info).toHaveBeenNthCalledWith(1, '[newrelic-context] initializer:start');
+  expect(console.info).toHaveBeenNthCalledWith(2, '[newrelic-context] initializer:ready');
 });
 
 test('initialization does not echo credentials, fetch telemetry, or post comments even if passed an action-shaped payload', async () => {
@@ -56,6 +62,7 @@ test('initialization does not echo credentials, fetch telemetry, or post comment
     input_data: { keyrings: { newrelic_context: 'private-newrelic-key' } },
   }]);
   expect(JSON.stringify(result)).not.toMatch(/private-actor-token|private-bot-token|private-newrelic-key/);
+  expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-actor-token|private-bot-token|private-newrelic-key/);
   expect(axios.create).not.toHaveBeenCalled();
   expect(client.setup).not.toHaveBeenCalled();
 });
@@ -85,6 +92,8 @@ test('uses the active installation identity rather than a package/version or sta
 
 test.each([{}, { context: {} }, { context: { snap_in_id: '' } }, { context: { snap_in_id: 123 } }])('rejects an unbound component response for %j', async (event) => {
   await expect(initialize([event])).rejects.toThrow('missing its snap-in installation ID');
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] initializer:start');
+  expect(console.info).not.toHaveBeenCalledWith('[newrelic-context] initializer:ready');
   expect(axios.create).not.toHaveBeenCalled();
   expect(client.setup).not.toHaveBeenCalled();
 });

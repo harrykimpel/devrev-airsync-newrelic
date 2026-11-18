@@ -83,10 +83,22 @@ test.each(['US', 'EU'] as const)('normalizes stable IDs, dates, source context a
   expect(url.pathname).toBe('/launcher/nrai.launcher');
   expect(JSON.parse(Buffer.from(url.searchParams.get('pane')!, 'base64').toString())).toEqual({ isPhoton: true, id: 'abc/def', nerdletId: 'nrai.issue-redirect' });
   expect(parseIssueReference(url.href)).toEqual({ accountId: '123', issueId: 'abc/def', region });
-  const data = item.data as Record<string, string>;
-  expect(data.body).toContain('Entities: checkout');
-  expect(data.body.startsWith(`[Open in New Relic](<${data.item_url_field}>)`)).toBe(true);
+  const data = item.data as { body: string[]; item_url_field: string };
+  expect(metadata.record_types.issues.fields.body.type).toBe('rich_text');
+  expect(Array.isArray(data.body)).toBe(true);
+  expect(data.body).toHaveLength(1);
+  expect(data.body[0]).toContain('Entities: checkout');
+  expect(data.body[0].startsWith(`[Open in New Relic](<${data.item_url_field}>)`)).toBe(true);
   expect((normalizeIssue({ ...issue, title: [] }, '123', region).data as Record<string, unknown>).title).toBe('New Relic issue abc/def');
+});
+
+test('serialized extracted rich text retains Markdown, descriptions and source context as array content', () => {
+  const issue = { issueId: 'id', title: ['Alert'], description: ['**Error** details', '```\nstack trace\n```'], state: 'ACTIVATED', priority: 'HIGH', createdAt: 1000, updatedAt: 2000 };
+  const record = JSON.parse(JSON.stringify(normalizeIssue(issue, '123', 'US')));
+  expect(record.data.body).toEqual([expect.stringContaining('**Error** details\n```\nstack trace\n```')]);
+  expect(record.data.body[0]).toContain('State: ACTIVATED\n\nPriority: HIGH');
+  const noDescription = normalizeIssue({ ...issue, description: undefined }, '123', 'US').data as { body: string[] };
+  expect(noDescription.body).toEqual([expect.stringContaining('[Open in New Relic]')]);
 });
 
 test('metadata and mappings expose import-only issues with no dangling template references', () => {

@@ -91,6 +91,9 @@ async function handleEvent(input: unknown) {
 }
 
 export default async function run(events: unknown[]) {
+  console.info('[newrelic-context] fetch:start');
   if (events.length !== 1) throw new Error('Expected one issue action event.');
-  return handleEvent(events[0]);
+  const result = await handleEvent(events[0]);
+  console.info('[newrelic-context] fetch:complete');
+  return result;
 }
