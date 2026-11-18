@@ -108,7 +108,9 @@ HTTPS GitHub issue URL in that repository becomes a linked result. This validate
 the agent's report; real tool execution and search-first duplicate avoidance must
 be verified in the target agent/MCP setup. Search and create are not atomic.
 
-For analysis, create and publish an internal agent in **Settings → Agent Studio**.
+For analysis, follow the [New Relic Incident Analyst setup guide](docs/NEW_RELIC_INCIDENT_ANALYST.md)
+for the copy-paste goal, instructions, Playground checks and connector settings.
+Create and publish an internal agent in **Settings → Agent Studio**.
 Give it instructions to summarize supplied evidence, distinguish facts from
 hypotheses, acknowledge missing/sampled data, and recommend investigation steps.
 The agent receives the issue title, source alert link, alert state and scrubbed,
