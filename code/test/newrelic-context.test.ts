@@ -31,6 +31,7 @@ const graph = (data: object) => ({ data: { data: { actor: { account: data } } } 
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(console, 'info').mockImplementation(() => undefined);
   jest.spyOn(Date, 'now').mockReturnValue(now);
   (axios.create as jest.Mock).mockReturnValue({ post });
   (axios.isAxiosError as unknown as jest.Mock).mockImplementation((e) => e?.isAxiosError === true);
@@ -47,6 +48,9 @@ afterEach(() => jest.restoreAllMocks());
 test.each(['US', 'EU'] as const)('fetches scoped metrics, logs and trace samples and posts one internal comment in %s', async (region) => {
   worksGet.mockResolvedValue({ data: { work: sourceWork(region) } });
   await expect(run([event(region)])).resolves.toMatchObject({ status: 'success' });
+  expect(console.info).toHaveBeenNthCalledWith(1, '[newrelic-context] fetch:start');
+  expect(console.info).toHaveBeenLastCalledWith('[newrelic-context] fetch:complete');
+  expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token/);
   expect(client.setup).toHaveBeenCalledWith({ endpoint: 'https://api.devrev.ai', token: 'actor-token' });
   expect(axios.create).toHaveBeenCalledWith(expect.objectContaining({ baseURL: region === 'EU' ? 'https://api.eu.newrelic.com/graphql' : 'https://api.newrelic.com/graphql', maxRedirects: 0, timeout: 10000 }));
   expect(post).toHaveBeenCalledTimes(4);
