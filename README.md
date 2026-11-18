@@ -153,7 +153,13 @@ resource lookup uses the snap-in's service account, as required by DevRev.
 Expired or missing user resources stop the action before any issue or telemetry
 request. The handler accepts both `object_id` and the Snap-kit example's
 `parent_core_object_id` issue context; conflicting IDs are rejected. The payload
-request ID is preferred, with the execution metadata request ID as a fallback.
+request ID is preferred for deduplication. If absent, the action uses the click's
+timestamp (ISO, Unix seconds, or Unix milliseconds), issue, actor and requested
+window. If those are unavailable, it uses the execution metadata request ID, then
+a generated UUID as a last resort. Missing request IDs do not reject an otherwise
+valid action. A `missing_request` response from an older version is a handler
+validation failure before connection lookup; upgrade the existing version to
+apply this fix. The last-resort path logs the fixed marker `request:generated`.
 
 The action sends this key only to the
 fixed regional NerdGraph endpoint inferred from the source alert link. Grant
@@ -180,10 +186,13 @@ Alerts without GUIDs produce an explanation instead of an account-wide query.
 Unrelated DevRev issues are rejected. Queries use NerdGraph variables, allowlisted
 identifiers, a five-second NRQL timeout and ten-second HTTP timeouts. The three
 initial telemetry queries run independently, so unavailable logs do not discard
-successful metrics/traces. Deliveries with the same request ID reuse a unique
-comment reference; clicking again deliberately creates a new snapshot. If only
-an execution request ID is available, deduplication covers that invocation;
-a retry assigned a new execution request ID can create another comment.
+successful metrics/traces. Deliveries with the same payload request ID or click
+identity reuse a unique comment reference; clicking again deliberately creates
+a new snapshot. Timestamp-based identities remain stable even if a retry gets
+a different execution request ID. If only an execution request ID is available,
+deduplication covers that invocation. If that ID changes on retry, or if no usable
+correlation metadata is supplied and a UUID must be generated, repeated deliveries
+can create duplicate comments.
 
 Only selected attributes are fetched. Common credentials and email addresses,
 including the active API/session keys, are scrubbed before posting; output rows

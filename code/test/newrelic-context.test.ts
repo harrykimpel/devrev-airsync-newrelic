@@ -196,6 +196,89 @@ test('accepts the parent issue field from DevRev’s Snap-kit example and the in
   expect(timelineEntriesCreate.mock.calls[2][0].external_ref).not.toBe(reference);
 });
 
+test.each([undefined, '', ' '])('fetches context and deduplicates the reported timestamped click with request IDs %j', async (requestId) => {
+  const original = event();
+  const input = {
+    ...original,
+    payload: { ...original.payload, actor_id: 'clicking-user', request_id: requestId, action: { ...original.payload.action, timestamp: '2026-11-18T09:15:23.752Z' } },
+    execution_metadata: { ...original.execution_metadata, request_id: requestId },
+    input_data: { resources: { keyrings: {} } },
+  };
+  timelineEntriesCreate.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409 } });
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  expect(snapInsResources).toHaveBeenCalledWith({ id: 'snap-1', user: 'clicking-user' }, { timeout: 10000 });
+  expect(worksGet).toHaveBeenCalledWith({ id: 'ISS-1' }, { timeout: 10000 });
+  expect(post).toHaveBeenCalledTimes(8);
+  const refs = timelineEntriesCreate.mock.calls.map(([comment]) => comment.external_ref);
+  expect(refs[0]).toMatch(/^newrelic-context:[a-f0-9]{64}$/);
+  expect(refs[1]).toBe(refs[0]);
+  expect(timelineEntriesList).toHaveBeenCalledTimes(1);
+  expect(console.error).not.toHaveBeenCalled();
+  expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token|clicking-user|2026-11-18/);
+});
+
+test('keeps a timestamped click stable across execution IDs and timestamp representations', async () => {
+  const original = event();
+  const input = {
+    ...original,
+    payload: { ...original.payload, request_id: '', action: { ...original.payload.action, timestamp: '2026-11-18T09:15:23.752Z' as string | number } },
+    execution_metadata: { ...original.execution_metadata, request_id: 'execution-1' },
+  };
+  await run([input]);
+  input.payload.action.timestamp = Date.parse('2026-11-18T09:15:23.752Z') / 1000;
+  input.execution_metadata.request_id = 'execution-2';
+  await run([input]);
+  input.payload.action.timestamp = Date.parse('2026-11-18T09:15:23.752Z');
+  input.execution_metadata.request_id = 'execution-3';
+  await run([input]);
+  const refs = timelineEntriesCreate.mock.calls.map(([comment]) => comment.external_ref);
+  expect(new Set(refs).size).toBe(1);
+});
+
+test.each(['timestamp', 'issue', 'actor', 'window', 'installation'])('creates a separate comment identity when a request-ID-free click changes %s', async (changed) => {
+  const original = event();
+  const input = {
+    ...original,
+    payload: { ...original.payload, actor_id: 'clicking-user', request_id: '', action: { ...original.payload.action, timestamp: '2026-11-18T09:15:23.752Z' } },
+  };
+  await run([input]);
+  if (changed === 'timestamp') input.payload.action.timestamp = '2026-11-18T09:15:23.753Z';
+  if (changed === 'issue') {
+    input.payload.context.object_id = 'ISS-2';
+    worksGet.mockResolvedValue({ data: { work: { ...sourceWork(), id: 'ISS-2' } } });
+  }
+  if (changed === 'actor') input.payload.actor_id = 'another-user';
+  if (changed === 'window') input.payload.action.value = 'recent';
+  if (changed === 'installation') input.context.snap_in_id = 'snap-2';
+  await run([input]);
+  expect(timelineEntriesCreate.mock.calls[1][0].external_ref).not.toBe(timelineEntriesCreate.mock.calls[0][0].external_ref);
+});
+
+test('preserves payload request ID precedence when click and execution metadata change', async () => {
+  const original = event();
+  const input = {
+    ...original,
+    payload: { ...original.payload, action: { ...original.payload.action, timestamp: '2026-11-18T09:15:23.752Z' } },
+    execution_metadata: { ...original.execution_metadata, request_id: 'execution-1' },
+  };
+  await run([input]);
+  input.payload.action.timestamp = '2026-11-18T09:15:23.753Z';
+  input.execution_metadata.request_id = 'execution-2';
+  await run([input]);
+  expect(timelineEntriesCreate.mock.calls[1][0].external_ref).toBe(timelineEntriesCreate.mock.calls[0][0].external_ref);
+});
+
+test.each([undefined, 'invalid-timestamp', NaN, Infinity, 8640000000000001])('allows a valid action without correlation metadata or a usable timestamp (%j)', async (timestamp) => {
+  const original = event();
+  const input = { ...original, payload: { ...original.payload, request_id: '', action: { ...original.payload.action, timestamp } } };
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  await expect(run([input])).resolves.toMatchObject({ status: 'success' });
+  expect(timelineEntriesCreate.mock.calls[1][0].external_ref).not.toBe(timelineEntriesCreate.mock.calls[0][0].external_ref);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] request:generated');
+  expect(console.error).not.toHaveBeenCalled();
+});
+
 test('rejects ambiguous parent issue IDs before obtaining credentials', async () => {
   const input = { ...event(), payload: { ...event().payload, context: { object_id: 'ISS-1', parent_core_object_id: 'ISS-2' } } };
   await expect(run([input])).rejects.toThrow('conflicting issue IDs');
