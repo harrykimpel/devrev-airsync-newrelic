@@ -5,6 +5,7 @@ import axios from 'axios';
 import { issuePermalink, parseIssueReference } from '../external-system/links';
 import { NewRelicIssue } from '../external-system/types';
 import { ContextPlan, QueryResult, redact } from './context';
+import { githubRepository, githubResult, GITHUB_PENDING_PREFIX, GITHUB_RESULT_PREFIX } from './github-policy';
 
 export interface Snapshot { mode: 'alert' | 'recent'; plan: ContextPlan; results: QueryResult[] }
 export const RESPONSE_SOURCE = 'newrelic-agent-responses';
@@ -15,9 +16,9 @@ export class AnalysisError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 
-export function configuredAgent(value: unknown, issueId: string): string {
+export function configuredAgent(value: unknown, issueId: string, field = 'Incident analysis agent ID'): string {
   if (typeof value !== 'string' || !/^don:core:[^:]+:devo\/[^:]+:ai_agent\/[^:/]+$/.test(value)) {
-    throw new AnalysisError('missing_analysis_agent', 'Set Incident analysis agent ID to the published agent’s full DON in the snap-in configuration.');
+    throw new AnalysisError('missing_analysis_agent', `Set ${field} to the published agent’s full DON in the snap-in configuration.`);
   }
   if (value.split(':ai_agent/')[0] !== issueId.split(':issue/')[0]) {
     throw new AnalysisError('invalid_analysis_agent', 'The analysis agent must belong to this issue’s DevRev organization.');
@@ -65,28 +66,46 @@ export function analysisPrompt(title: string, sourceUrl: string, issue: NewRelic
 }
 
 interface Binding {
-  connector: 'newrelic-analysis-v1'; snap_in_id: string; issue_id: string;
+  connector: 'newrelic-analysis-v1' | 'newrelic-github-v1'; snap_in_id: string; issue_id: string;
   agent_id: string; request_hash: string; source_url: string;
+  github?: { repository: string; analysis_comment_id: string };
 }
 export interface AnalysisMetadata extends Binding { comment_id: string }
 
-export function analysisReference(binding: Binding): string {
-  return 'newrelic-analysis:' + createHash('sha256').update(JSON.stringify([
-    binding.connector, binding.snap_in_id, binding.issue_id, binding.agent_id, binding.request_hash, binding.source_url,
-  ])).digest('hex');
+export function githubRequestPrefix(snapInId: string, issueId: string, agentId: string, requestHash: string, repository: string, sourceUrl: string): string {
+  return 'newrelic-github:' + createHash('sha256').update(JSON.stringify([
+    'newrelic-github-v1', snapInId, issueId, agentId, requestHash, sourceUrl, repository,
+  ])).digest('hex') + ':';
 }
 
-const failureBody = (sourceUrl: string) => '## New Relic analysis unavailable\n\nThe agent analysis could not be completed. Retry the analysis or use an evidence button to inspect the telemetry.\n\n[Open source alert](<' + sourceUrl + '>)';
+export function analysisReference(binding: Binding): string {
+  if (binding.connector === 'newrelic-github-v1') {
+    return githubRequestPrefix(binding.snap_in_id, binding.issue_id, binding.agent_id, binding.request_hash,
+      binding.github?.repository ?? '', binding.source_url) + createHash('sha256').update(binding.github?.analysis_comment_id ?? '').digest('hex');
+  }
+  const values = [
+    binding.connector, binding.snap_in_id, binding.issue_id, binding.agent_id, binding.request_hash, binding.source_url,
+  ];
+  return 'newrelic-analysis:' + createHash('sha256').update(JSON.stringify(values)).digest('hex');
+}
+
+const failureBody = (sourceUrl: string, github = false) => (github
+  ? '## GitHub issue request unavailable\n\nThe agent did not return a validated GitHub issue result. Check its GitHub MCP access and search for an existing issue before retrying.'
+  : '## New Relic analysis unavailable\n\nThe agent analysis could not be completed. Retry the analysis or use an evidence button to inspect the telemetry.') + '\n\n[Open source alert](<' + sourceUrl + '>)';
 
 interface StartOptions {
   endpoint: string; actorToken: string; serviceToken: string; serviceAccountId: string;
   snapInId: string; issueId: string; agentId: string; eventSource: string;
   requestHash: string; sourceUrl: string; prompt: string;
+  github?: { repository: string; analysis_comment_id: string };
 }
 
 export async function startAnalysis(options: StartOptions) {
-  const binding: Binding = { connector: 'newrelic-analysis-v1', snap_in_id: options.snapInId,
+  const binding: Binding = { connector: options.github ? 'newrelic-github-v1' : 'newrelic-analysis-v1', snap_in_id: options.snapInId,
     issue_id: options.issueId, agent_id: options.agentId, request_hash: options.requestHash, source_url: options.sourceUrl };
+  if (options.github) binding.github = options.github;
+  const pendingPrefix = options.github ? GITHUB_PENDING_PREFIX : PENDING_PREFIX;
+  const resultPrefix = options.github ? GITHUB_RESULT_PREFIX : '## New Relic analysis\n\n';
   const reference = analysisReference(binding);
   const bot = client.setup({ endpoint: options.endpoint, token: options.serviceToken });
   let comment: publicSDK.TimelineEntry;
@@ -94,7 +113,9 @@ export async function startAnalysis(options: StartOptions) {
     comment = (await bot.timelineEntriesCreate({ object: options.issueId,
       type: publicSDK.TimelineEntriesCreateRequestType.TimelineComment,
       visibility: publicSDK.TimelineEntryVisibility.Internal, external_ref: reference,
-      body: PENDING_PREFIX + 'The incident analyst is comparing the alert window with the latest 30 minutes. The result will replace this internal comment. If no result arrives within 30 minutes, retry or use an evidence button.\n\n[Open source alert](<' + options.sourceUrl + '>)',
+      body: pendingPrefix + (options.github
+        ? 'The GitHub issue agent is checking for an existing issue and preparing the requested issue from the completed analysis. Its result will replace this comment. If no result arrives within 30 minutes, check GitHub before retrying.'
+        : 'The incident analyst is comparing the alert window with the latest 30 minutes. The result will replace this internal comment. If no result arrives within 30 minutes, retry or use an evidence button.') + '\n\n[Open source alert](<' + options.sourceUrl + '>)',
     }, { timeout: 10000 })).data.timeline_entry;
   } catch (error) {
     if (axios.isAxiosError(error) && [400, 409].includes(error.response?.status ?? 0)) {
@@ -126,16 +147,16 @@ export async function startAnalysis(options: StartOptions) {
       .then((result) => result.data.timeline_entry).catch(() => undefined);
     if (current?.external_ref === reference && current.created_by?.id === options.serviceAccountId &&
       current.object === options.issueId && current.visibility === 'internal' && 'body' in current && typeof current.body === 'string') {
-      if (current.body.startsWith('## New Relic analysis\n\n')) return { status: 'success', detail: 'The analysis result is available in the internal discussion.' };
-      if (current.body.startsWith(PENDING_PREFIX)) {
-        await bot.timelineEntriesUpdate({ id: comment.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body: failureBody(options.sourceUrl) }, { timeout: 10000 })
+      if (current.body.startsWith(resultPrefix)) return { status: 'success', detail: 'The agent result is available in the internal discussion.' };
+      if (current.body.startsWith(pendingPrefix)) {
+        await bot.timelineEntriesUpdate({ id: comment.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body: failureBody(options.sourceUrl, !!options.github) }, { timeout: 10000 })
           .catch(() => undefined);
       }
     }
     throw new AnalysisError('agent_start_failed', 'Could not start the DevRev agent. Check that it is published and the requesting user has access to execute it.');
   }
-  console.info('[newrelic-context] analysis:requested');
-  return { status: 'success', detail: 'Analysis requested. The agent’s result will appear in the issue’s internal discussion.' };
+  console.info(options.github ? '[newrelic-context] github:requested' : '[newrelic-context] analysis:requested');
+  return { status: 'success', detail: options.github ? 'GitHub issue requested. The agent’s result will appear in the internal discussion.' : 'Analysis requested. The agent’s result will appear in the issue’s internal discussion.' };
 }
 
 /** Called only by the DevRev event-source automation, never by a public webhook. */
@@ -144,16 +165,23 @@ export async function finishAnalysis(input: unknown) {
     payload?: { type?: string; ai_agent_response?: { agent?: string; agent_response?: string; session_object?: string; message?: string; client_metadata?: AnalysisMetadata } };
     context?: { snap_in_id?: string; service_account_id?: string; secrets?: { service_account_token?: string } };
     execution_metadata?: { devrev_endpoint?: string };
-    input_data?: { global_values?: { analysis_agent_id?: string } };
+    input_data?: { global_values?: { analysis_agent_id?: string; github_issue_agent_id?: string; github_issue_repository?: string } };
   };
   const response = event?.payload?.ai_agent_response;
   const metadata = response?.client_metadata;
-  if (event?.payload?.type !== 'ai_agent_response' || metadata?.connector !== 'newrelic-analysis-v1' ||
+  if (event?.payload?.type !== 'ai_agent_response' || !metadata || !['newrelic-analysis-v1', 'newrelic-github-v1'].includes(metadata.connector) ||
     metadata.snap_in_id !== event.context?.snap_in_id || !['message', 'error'].includes(response?.agent_response ?? '')) return { status: 'ignored' };
   if (typeof metadata.issue_id !== 'string' || !/^don:core:[^:]+:devo\/[^:]+:issue\/[^:/]+$/.test(metadata.issue_id) ||
     typeof metadata.comment_id !== 'string' || !metadata.comment_id.startsWith(metadata.issue_id + ':comment/') ||
     !/^[a-f0-9]{64}$/.test(metadata.request_hash)) throw new AnalysisError('invalid_analysis_binding', 'The analysis response has invalid routing metadata.');
-  const agentId = configuredAgent(event.input_data?.global_values?.analysis_agent_id, metadata.issue_id);
+  const github = metadata.connector === 'newrelic-github-v1';
+  if (github && (!githubRepository(metadata.github?.repository) ||
+    metadata.github?.repository !== githubRepository(event.input_data?.global_values?.github_issue_repository) ||
+    typeof metadata.github?.analysis_comment_id !== 'string' || !metadata.github.analysis_comment_id.startsWith(metadata.issue_id + ':comment/'))) {
+    throw new AnalysisError('invalid_analysis_binding', 'The GitHub request does not match the configured repository and source analysis.');
+  }
+  const agentId = configuredAgent(github ? event.input_data?.global_values?.github_issue_agent_id : event.input_data?.global_values?.analysis_agent_id,
+    metadata.issue_id, github ? 'GitHub issue agent ID' : 'Incident analysis agent ID');
   if (response?.agent !== agentId || metadata.agent_id !== agentId) return { status: 'ignored' };
   const source = parseIssueReference(metadata.source_url);
   const sourceUrl = issuePermalink(source.accountId, source.issueId, source.region);
@@ -170,14 +198,16 @@ export async function finishAnalysis(input: unknown) {
     entry.created_by?.id !== botId || entry.external_ref !== analysisReference(metadata)) {
     throw new AnalysisError('invalid_analysis_binding', 'The analysis response is not bound to a bot-owned internal request.');
   }
-  if (!('body' in entry) || typeof entry.body !== 'string' || !entry.body.startsWith(PENDING_PREFIX)) return { status: 'ignored' };
+  if (!('body' in entry) || typeof entry.body !== 'string' || !entry.body.startsWith(github ? GITHUB_PENDING_PREFIX : PENDING_PREFIX)) return { status: 'ignored' };
   const age = Date.now() - Date.parse(entry.created_date ?? '');
   if (!Number.isFinite(age) || age < -60000 || age > ANALYSIS_TTL_MS) return { status: 'expired' };
   const message = typeof response.message === 'string' ? redact(response.message, [token]).trim() : '';
-  const body = response.agent_response === 'error' || !message ? failureBody(sourceUrl)
+  const githubBody = github && response.agent_response === 'message' ? githubResult(message, metadata.github!.repository) : undefined;
+  const body = github ? (githubBody ? githubBody + '\n\n[Open source alert](<' + sourceUrl + '>)' : failureBody(sourceUrl, true))
+    : response.agent_response === 'error' || !message ? failureBody(sourceUrl)
     : '## New Relic analysis\n\n' + message.slice(0, 8000) + (message.length > 8000 ? '\n\n[Analysis truncated]' : '') +
       '\n\nAI-generated analysis of bounded telemetry samples. Verify hypotheses against the source evidence.\n\n[Open source alert](<' + sourceUrl + '>)';
   await bot.timelineEntriesUpdate({ id: entry.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body }, { timeout: 10000 });
-  console.info('[newrelic-context] analysis:complete');
+  console.info(github ? '[newrelic-context] github:complete' : '[newrelic-context] analysis:complete');
   return { status: 'success' };
 }

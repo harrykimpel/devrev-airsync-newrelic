@@ -88,6 +88,25 @@ Open an imported issue and find the **New Relic context** component:
   brief on current conditions.
 - **Fetch alert evidence** and **Fetch latest evidence** post bounded raw query
   results for their respective window without invoking an agent.
+- **Create GitHub issue** invokes a separate GitHub MCP agent on demand using
+  the latest completed analysis. It posts the agent's GitHub issue link back to
+  the internal discussion. It does not fetch telemetry again or run automatically.
+
+For the GitHub agent, use the ready-to-paste goal, instructions and MCP tool
+configuration in [GitHub issue agent setup](docs/GITHUB_ISSUE_AGENT.md). Set the
+optional **GitHub issue agent ID** and **GitHub issue repository** organization
+inputs after publishing that agent. Its GitHub connection needs issue search,
+read and create access in the selected repository. The connector sends only the
+latest completed internal brief from the current bot among the last 100 entries,
+plus source IDs, a New Relic link and a stable incident marker. Pending/failed
+analyses, raw evidence and other users' lookalike comments are not selected.
+
+GitHub result callbacks reuse the existing DevRev event source and bot permission.
+They additionally check the selected repository and source analysis binding.
+Only a structured `created`/`existing` report with a matching issue number and
+HTTPS GitHub issue URL in that repository becomes a linked result. This validates
+the agent's report; real tool execution and search-first duplicate avoidance must
+be verified in the target agent/MCP setup. Search and create are not atomic.
 
 For analysis, create and publish an internal agent in **Settings → Agent Studio**.
 Give it instructions to summarize supplied evidence, distinguish facts from
@@ -105,7 +124,8 @@ requesting user needs permission to invoke the published agent. Grant the new
 optional **New Relic Bot `issue:read`** self scope for asynchronous comments,
 in addition to the existing user impersonation permission for reading issues.
 Analysis with a missing agent configuration fails explicitly; the evidence
-buttons remain available.
+buttons remain available. GitHub issue creation has its own separately configured
+agent, and does not require the clicking user's New Relic key when reusing a brief.
 
 The click first authorizes issue access as the user, collects both windows, and
 creates a bot-owned internal "analysis requested" comment. It then invokes the
