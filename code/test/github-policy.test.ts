@@ -12,6 +12,11 @@ test('accepts the actual verified issue reply with introductory prose and a Mark
   expect(githubResult(reply, repository)).toBe('## GitHub issue from New Relic analysis\n\nAgent reported: created [GitHub issue #165](<' + url + '>).');
 });
 
+test('accepts the reported existing issue #166 reply without any parser relaxation', () => {
+  const message = readFileSync(join(__dirname, 'fixtures/github-agent-existing-reply.txt'), 'utf8');
+  expect(githubResult(message, repository)).toContain('found existing [GitHub issue #166]');
+});
+
 test.each([
   'Issue verified.\n\n' + JSON.stringify(report),
   'Issue verified.\n```json\n' + JSON.stringify(report) + '\n```\nComplete.',
