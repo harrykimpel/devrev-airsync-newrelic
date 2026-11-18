@@ -91,6 +91,31 @@ Open an imported issue and find the **New Relic context** component:
 - **Create GitHub issue** invokes a separate GitHub MCP agent on demand using
   the latest completed analysis. It posts the agent's GitHub issue link back to
   the internal discussion. It does not fetch telemetry again or run automatically.
+- **Start coding agent** asks the GitHub agent to assign the issue to Copilot,
+  which implements a proposed fix and creates its PR. The result is added to the
+  internal discussion; an assignment alone is not reported as a completed fix.
+- **Check coding progress** asks the agent to read the assignment and linked PR
+  state. It posts the PR link when available and never starts another coding run.
+
+For version 1.4.0, follow the [coding agent setup and upgrade guide](docs/CODING_AGENT.md).
+The coding actions reuse the **GitHub issue agent ID** by default (AG-7 in the
+example org). Republish that agent with the updated instructions and GitHub
+assignment/PR read tools. **Coding agent ID** can instead select a separate DevRev
+coordinator. **Coding agent provider** defaults to `copilot`; unsupported values
+fail explicitly. **Coding agent base branch** is optional and otherwise uses the
+GitHub repository default. Adding another provider requires an adapter and its
+MCP instructions, rather than merely entering a new name.
+
+The connector selects the latest completed, bot-owned GitHub issue result among
+the last 100 internal discussion entries and validates its repository, URL and
+number before dispatch. Coding does not require another New Relic query or key.
+Start requests reuse a stable reservation for this installation, coordinator,
+provider and GitHub issue, including after an uncertain response. Check progress
+to inspect an unknown outcome. Status updates are on demand; GitHub completion
+does not automatically trigger a DevRev comment. The coordinator must check
+existing assignments/PRs before assigning, since GitHub writes and searches are
+not atomic. The callback validates the agent's structured report and routing,
+not its MCP execution trace. Human review and merge happen on GitHub.
 
 For the GitHub agent, use the ready-to-paste goal, instructions and MCP tool
 configuration in [GitHub issue agent setup](docs/GITHUB_ISSUE_AGENT.md). Set the

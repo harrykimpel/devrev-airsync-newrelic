@@ -13,7 +13,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Accept prose/fences around one JSON object, without guessing between reports. */
-function resultObject(message: string): Record<string, unknown> | undefined {
+export function resultObject(message: string): Record<string, unknown> | undefined {
   if (message.length > 32768) return undefined;
   try {
     const parsed: unknown = JSON.parse(message);
@@ -62,16 +62,24 @@ function resultUrl(value: string): string {
   return /^<([^<>\s]+)>$/.exec(text)?.[1] ?? text;
 }
 
+export function githubUrl(value: unknown, repository: string, kind: 'issues' | 'pull', number: unknown): string | undefined {
+  if (typeof value !== 'string' || !Number.isSafeInteger(number) || (number as number) <= 0) return undefined;
+  try {
+    const url = new URL(resultUrl(value));
+    const match = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/([1-9]\d*)$/.exec(url.pathname);
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.username || url.password || url.port || url.search || url.hash ||
+      !match || `${match[1]}/${match[2]}`.toLowerCase() !== repository.toLowerCase() || match[3] !== kind || Number(match[4]) !== number) return undefined;
+    return url.href;
+  } catch { return undefined; }
+}
+
 /** Validate the agent's report; this does not independently verify its MCP calls. */
 export function githubResult(message: string, repository: string): string | undefined {
   try {
     const result = resultObject(message.trim());
     if (!result || (result.status !== 'created' && result.status !== 'existing') || typeof result.url !== 'string') return undefined;
-    const url = new URL(resultUrl(result.url));
-    const match = /^\/([^/]+)\/([^/]+)\/issues\/([1-9]\d*)$/.exec(url.pathname);
-    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.username || url.password || url.port || url.search || url.hash ||
-      !match || `${match[1]}/${match[2]}`.toLowerCase() !== repository.toLowerCase() ||
-      !Number.isSafeInteger(result.issue_number) || result.issue_number !== Number(match[3])) return undefined;
-    return GITHUB_RESULT_PREFIX + `Agent reported: ${result.status === 'created' ? 'created' : 'found existing'} [GitHub issue #${result.issue_number}](<${url.href}>).`;
+    const url = githubUrl(result.url, repository, 'issues', result.issue_number);
+    if (!url) return undefined;
+    return GITHUB_RESULT_PREFIX + `Agent reported: ${result.status === 'created' ? 'created' : 'found existing'} [GitHub issue #${result.issue_number}](<${url}>).`;
   } catch { return undefined; }
 }

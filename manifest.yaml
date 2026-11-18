@@ -39,7 +39,7 @@ functions:
   - name: initialize_newrelic_context
     description: Initialize the New Relic context issue component
   - name: complete_newrelic_analysis
-    description: Complete an internal analysis or GitHub issue comment when a DevRev agent responds
+    description: Complete an internal analysis, GitHub issue or coding progress comment when a DevRev agent responds
 
 inputs:
   organization:
@@ -64,6 +64,27 @@ inputs:
       default_value: ""
       ui:
         display_name: GitHub issue repository
+    - name: coding_agent_id
+      description: Optional full DON of a published coding coordinator agent. Empty reuses GitHub issue agent ID. Publish the coding workflow instructions before use.
+      field_type: text
+      is_required: false
+      default_value: ""
+      ui:
+        display_name: Coding agent ID
+    - name: coding_agent_provider
+      description: Coding provider adapter. This release supports copilot; other providers require an adapter.
+      field_type: text
+      is_required: false
+      default_value: copilot
+      ui:
+        display_name: Coding agent provider
+    - name: coding_agent_base_branch
+      description: Optional existing GitHub branch for Copilot to start from. Empty uses the repository default branch.
+      field_type: text
+      is_required: false
+      default_value: ""
+      ui:
+        display_name: Coding agent base branch
 
 event_sources:
   organization:
@@ -158,6 +179,23 @@ snap_components:
                   text:
                     type: plain_text
                     text: Create GitHub issue
+            - type: actions
+              direction: row
+              elements:
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: coding
+                  text:
+                    type: plain_text
+                    text: Start coding agent
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: coding_status
+                  text:
+                    type: plain_text
+                    text: Check coding progress
 
 keyring_types:
   - id: newrelic-user-key

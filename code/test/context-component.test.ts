@@ -49,6 +49,16 @@ test('renders both actions using the snap-kit response envelope without a button
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'alert' }),
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'recent' }),
   ]);
+  const codingButtons = body.snaps[0].elements[4].elements;
+  expect(codingButtons).toEqual([
+    expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'coding', text: { type: 'plain_text', text: 'Start coding agent' } }),
+    expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'coding_status', text: { type: 'plain_text', text: 'Check coding progress' } }),
+  ]);
+  expect(manifest.inputs.organization).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: 'coding_agent_id', is_required: false, default_value: '' }),
+    expect.objectContaining({ name: 'coding_agent_provider', is_required: false, default_value: 'copilot' }),
+    expect.objectContaining({ name: 'coding_agent_base_branch', is_required: false, default_value: '' }),
+  ]));
   expect(axios.create).not.toHaveBeenCalled();
   expect(client.setup).not.toHaveBeenCalled();
   expect(console.info).toHaveBeenNthCalledWith(1, '[newrelic-context] initializer:start');
