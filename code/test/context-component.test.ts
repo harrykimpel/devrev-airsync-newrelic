@@ -88,7 +88,7 @@ test('initialization does not echo credentials, fetch telemetry, or post comment
   const result = await initialize([{
     payload: { action: { id: 'fetch_newrelic_context', value: 'recent' }, context: { object_id: 'ISS-1' } },
     context: { snap_in_id: snapInId, secrets: { actor_session_token: 'private-actor-token', service_account_token: 'private-bot-token' } },
-    input_data: { keyrings: { newrelic_context: 'private-newrelic-key' } },
+    input_data: { keyrings: { newrelic_context: 'private-newrelic-key' }, global_values: { acknowledge_on_triage: true, investigate_on_github_issue: true } },
   }]);
   expect(JSON.stringify(result)).not.toMatch(/private-actor-token|private-bot-token|private-newrelic-key/);
   expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toMatch(/private-actor-token|private-bot-token|private-newrelic-key/);

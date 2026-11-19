@@ -658,13 +658,39 @@ test('triage still starts if its acknowledgment result cannot be posted', async 
   expect(console.error).toHaveBeenCalledWith('[newrelic-context] acknowledgment:report_failed');
 });
 
-test.each(['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding_status'])('the acknowledgment setting does not make the %s action acknowledge', async (mode) => {
+test.each(['evidence', 'recent_evidence', 'github', 'coding', 'coding_status'])('the acknowledgment setting does not make the %s action acknowledge', async (mode) => {
   const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
   const input = click(mode);
   Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
   // Some standalone handoffs need a previous result; their preflight can reject,
   // but neither a successful read-only action nor a rejected handoff may write.
   await fetchContext([input]).catch(() => undefined);
+  expect(acknowledge).not.toHaveBeenCalled();
+});
+
+test.each(['alert', 'recent'])('the %s analysis action acknowledges only after the user explicitly starts analysis with the setting enabled', async (mode) => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click(mode);
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  await expect(fetchContext([input])).resolves.toMatchObject({ acknowledgment_status: 'acknowledged' });
+  expect(acknowledge).toHaveBeenCalledTimes(1);
+  expect(acknowledge).toHaveBeenCalledWith('123', issue.issueId, issue.createdAt);
+  expect(acknowledge.mock.invocationCallOrder[0]).toBeLessThan((HttpClient.prototype.nrql as jest.Mock).mock.invocationCallOrder[0]);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  expect(console.info).toHaveBeenCalledWith(`[newrelic-context] acknowledgment:requested action=${mode}`);
+});
+
+test.each(['alert', 'recent'])('the %s analysis action keeps acknowledgment disabled by default', async (mode) => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  await fetchContext([click(mode)]);
+  expect(acknowledge).not.toHaveBeenCalled();
+});
+
+test('an invalid analysis configuration cannot acknowledge before analysis starts', async () => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click();
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true, analysis_agent_id: '' });
+  await expect(fetchContext([input])).rejects.toThrow();
   expect(acknowledge).not.toHaveBeenCalled();
 });
 

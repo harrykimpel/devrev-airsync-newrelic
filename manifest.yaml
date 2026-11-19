@@ -44,12 +44,12 @@ functions:
 inputs:
   organization:
     - name: acknowledge_on_triage
-      description: Acknowledge the source New Relic issue when Triage and start fix is clicked. Uses the clicking user's existing New Relic connection; acknowledgment failures do not stop triage.
+      description: Acknowledge the source New Relic issue when Analyze incident, Analyze latest 30 minutes or Triage and start fix is clicked. Sync and component initialization never acknowledge. Uses the clicking user's existing connection; failures do not stop analysis.
       field_type: bool
       is_required: false
       default_value: false
       ui:
-        display_name: Acknowledge in New Relic when triage starts
+        display_name: Acknowledge New Relic when analysis starts
     - name: investigate_on_github_issue
       description: After a validated GitHub issue result from Create GitHub issue or Triage and start fix, mark the source New Relic issue as investigating using the initiating user's saved connection. Update failures are reported separately.
       field_type: bool
@@ -147,7 +147,7 @@ snap_components:
             - type: content
               elements:
                 - type: plain_text
-                  text: Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; it also acknowledges the source alert when enabled in snap-in settings. The brief and verified links appear in the internal discussion.
+                  text: Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Analysis actions acknowledge the source alert when enabled in snap-in settings. Triage and start fix runs all three steps; the brief and verified links appear in the internal discussion.
             - type: actions
               direction: row
               elements:

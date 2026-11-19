@@ -11,7 +11,7 @@ export class NewRelicApiError extends Error {
 
 export type AcknowledgmentDiagnostic = 'unspecified' | 'invalid_source_id' | 'source_read_failed' | 'source_state_unsupported' |
   'mutation_request_failed' | 'mutation_rejected' | 'receipt_missing' | 'receipt_error_missing' |
-  'receipt_action_mismatch' | 'receipt_account_mismatch' | 'receipt_issue_mismatch' | 'read_back_failed' | 'read_back_pending';
+  'receipt_action_mismatch' | 'receipt_account_mismatch' | 'receipt_issue_mismatch' | 'read_back_failed' | 'read_back_pending' | 'sync_read_only';
 
 export class NewRelicAcknowledgmentError extends Error {
   constructor(readonly code: 'rejected' | 'unconfirmed', readonly diagnostic: AcknowledgmentDiagnostic = 'unspecified') {
@@ -24,7 +24,7 @@ export class NewRelicAcknowledgmentError extends Error {
 export type AcknowledgmentStatus = 'acknowledged' | 'already_acknowledged' | 'closed';
 
 export class NewRelicInvestigationError extends Error {
-  constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending') {
+  constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending' | 'sync_read_only') {
     super('The New Relic investigation status could not be confirmed.');
   }
 }
@@ -36,10 +36,12 @@ function positiveEpoch(value: unknown): boolean {
 
 export class HttpClient {
   private readonly http: AxiosInstance;
+  private readonly syncReadOnly: boolean;
   readonly region: 'US' | 'EU';
 
   constructor(event: AirSyncEvent | { org_id: string; key: string }, timeoutMs = 30000) {
     // The connection's subdomain is a region, never an arbitrary API hostname.
+    this.syncReadOnly = 'payload' in event;
     const connection = 'payload' in event ? event.payload.connection_data : event;
     const subdomain = connection.org_id?.toLowerCase();
     const region = subdomain === 'api' || subdomain === 'us' ? 'US' : subdomain === 'api.eu' || subdomain === 'eu' ? 'EU' : undefined;
@@ -61,6 +63,7 @@ export class HttpClient {
   }
 
   private async query<T>(query: string, variables: object = {}): Promise<T> {
+    if (this.syncReadOnly && /^\s*mutation\b/.test(query)) throw new NewRelicApiError('AirSync clients cannot mutate New Relic issues.');
     try {
       const response = await this.http.post<{ data?: T; errors?: { extensions?: { errorClass?: string } }[] }>('', { query, variables });
       if (response.data.errors?.length) {
@@ -115,6 +118,7 @@ export class HttpClient {
   }
 
   async acknowledgeIssue(accountId: string, issueId: string, createdAt: number): Promise<AcknowledgmentStatus> {
+    if (this.syncReadOnly) throw new NewRelicAcknowledgmentError('rejected', 'sync_read_only');
     // Mutations accept only the UUID used by Alert Intelligence, not an arbitrary
     // external identifier or any ID supplied by an agent response.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) {
@@ -177,6 +181,7 @@ export class HttpClient {
   }
 
   async markIssueInvestigating(accountId: string, issueId: string, createdAt: number): Promise<'investigating' | 'already_investigating' | 'closed'> {
+    if (this.syncReadOnly) throw new NewRelicInvestigationError('sync_read_only');
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) throw new NewRelicInvestigationError('invalid_source');
     let before: NewRelicIssue;
     try { before = await this.getIssue(accountId, issueId, createdAt, true); }
