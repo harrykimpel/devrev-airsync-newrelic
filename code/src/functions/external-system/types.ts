@@ -12,6 +12,7 @@ export interface NewRelicIssue {
   createdAt: number;
   updatedAt: number;
   acknowledgedAt?: number | string | null;
+  investigatedAt?: number | string | null;
   entityNames?: string[];
   entityGuids?: string[];
 }

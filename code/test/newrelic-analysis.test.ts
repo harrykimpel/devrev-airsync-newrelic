@@ -6,7 +6,7 @@ import fetchContext from '../src/functions/fetch_newrelic_context';
 import complete from '../src/functions/complete_newrelic_analysis';
 import { analysisPrompt, analysisReference, PENDING_PREFIX, RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
 import { planContext } from '../src/functions/fetch_newrelic_context/context';
-import { HttpClient, NewRelicAcknowledgmentError } from '../src/functions/external-system/http-client';
+import { HttpClient, NewRelicAcknowledgmentError, NewRelicInvestigationError } from '../src/functions/external-system/http-client';
 import { issuePermalink } from '../src/functions/external-system/links';
 import { githubRepository, githubResult } from '../src/functions/fetch_newrelic_context/github-policy';
 import { triageResult } from '../src/functions/fetch_newrelic_context/triage-policy';
@@ -26,9 +26,10 @@ const sourceUrl = issuePermalink('123', issue.issueId, 'US');
 const work = { id: issueId, type: 'issue', title: 'Latency actor-token', created_date: new Date(issue.createdAt).toISOString(), sync_metadata: { external_reference: sourceUrl, external_record_id: '123:source-issue' } };
 const actor = { worksGet: jest.fn(), timelineEntriesCreate: jest.fn(), timelineEntriesList: jest.fn() };
 const bot = { timelineEntriesCreate: jest.fn(), timelineEntriesList: jest.fn(), timelineEntriesGet: jest.fn(), timelineEntriesUpdate: jest.fn() };
-const agent = { aiAgentEventsExecuteAsync: jest.fn() };
+const agent = { aiAgentEventsExecuteAsync: jest.fn(), snapInsResources: jest.fn() };
 let comment: Record<string, any>;
 let records: Map<string, Record<string, any>>;
+let investigationReports: Map<string, Record<string, any>>;
 
 function click(value = 'alert') {
   return { payload: { action: { id: 'fetch_newrelic_context', value, timestamp: '2026-11-18T09:35:57.958Z' }, context: { object_id: issueId }, actor_id: 'user-1' },
@@ -47,6 +48,7 @@ function response(type = 'message', message = 'Latency is elevated; inspect the 
 beforeEach(() => {
   comment = {};
   records = new Map();
+  investigationReports = new Map();
   jest.clearAllMocks();
   jest.spyOn(Date, 'now').mockReturnValue(now);
   jest.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -66,15 +68,22 @@ beforeEach(() => {
       records.set(request.external_ref, record);
       return { data: { timeline_entry: record } };
     }
+    if (request.external_ref.startsWith('newrelic-investigation-report:')) {
+      if (investigationReports.has(request.external_ref)) throw { isAxiosError: true, response: { status: 409 } };
+      const report = { ...request, id: issueId + ':comment/investigation', created_by: { id: serviceAccountId } };
+      investigationReports.set(request.external_ref, report);
+      return { data: { timeline_entry: report } };
+    }
     if (comment.external_ref === request.external_ref) throw { isAxiosError: true, response: { status: 409 } };
     comment = { ...request, id: issueId + ':comment/analysis', created_by: { id: serviceAccountId }, created_date: new Date(now).toISOString() };
     return { data: { timeline_entry: comment } };
   });
   bot.timelineEntriesGet.mockImplementation(async ({ id, external_ref }) => ({ data: { timeline_entry: external_ref ? records.get(external_ref)
     : [...records.values()].find((entry) => entry.id === id) ?? comment } }));
-  bot.timelineEntriesList.mockImplementation(async ({ visibility } = {}) => ({ data: { timeline_entries: visibility?.includes('private') ? [...records.values()] : [comment] } }));
+  bot.timelineEntriesList.mockImplementation(async ({ visibility } = {}) => ({ data: { timeline_entries: visibility?.includes('private') ? [...records.values()] : [comment, ...investigationReports.values()] } }));
   bot.timelineEntriesUpdate.mockImplementation(async (request) => { comment = { ...comment, body: request.body }; return { data: { timeline_entry: comment } }; });
   agent.aiAgentEventsExecuteAsync.mockResolvedValue({ data: { session: { id: core + ':ai_agent_session/1' } } });
+  agent.snapInsResources.mockResolvedValue({ data: { keyrings: { newrelic_context: { secret: 'private-nr-key', is_expired: false } } } });
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -666,4 +675,136 @@ test('invalid triage configuration rejects before any acknowledgment', async () 
   await expect(fetchContext([input])).rejects.toThrow();
   expect(acknowledge).not.toHaveBeenCalled();
   expect(actor.timelineEntriesCreate).not.toHaveBeenCalled();
+});
+
+function investigationClick(mode = 'github') {
+  const input = click(mode);
+  Object.assign(input.input_data.global_values, { investigate_on_github_issue: true });
+  return input;
+}
+function investigationResponse(message = JSON.stringify(triageGitHub)) {
+  const event = response('message', message);
+  Object.assign(event.input_data.global_values, { investigate_on_github_issue: true });
+  return event;
+}
+
+test.each(['created', 'existing'])('marks the source investigating after a validated %s GitHub result using the reserved actor connection', async (status) => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick()]);
+  expect(mark).not.toHaveBeenCalled();
+  const metadata = agent.aiAgentEventsExecuteAsync.mock.calls[0][0].client_metadata;
+  expect(metadata.investigation_requested).toBe(true);
+  expect(metadata.investigation_record_id).toMatch(/:comment\/record-/);
+  expect(JSON.stringify(metadata)).not.toMatch(/user-1|private-nr-key|actor-token|bot-token/);
+  const saved = [...records.values()].find((entry) => entry.external_ref.startsWith('newrelic-investigation-request:'))!;
+  expect(JSON.parse(saved.body)).toMatchObject({ actor_id: 'user-1', external_record_id: '123:source-issue' });
+  const event = investigationResponse(JSON.stringify({ ...triageGitHub, status }));
+  Object.assign(event.payload.ai_agent_response.client_metadata, { actor_id: 'attacker', api_key: 'untrusted-key' });
+  await complete([event]);
+  expect(agent.snapInsResources).toHaveBeenCalledWith({ id: snapInId, user: 'user-1' }, { timeout: 10000 });
+  expect(client.setupBeta).toHaveBeenLastCalledWith({ endpoint: 'https://api.devrev.ai', token: 'bot-token' });
+  expect(mark).toHaveBeenCalledWith('123', issue.issueId, issue.createdAt);
+  expect(bot.timelineEntriesUpdate.mock.invocationCallOrder[0]).toBeLessThan(mark.mock.invocationCallOrder[0]);
+  expect(comment.body).toContain('GitHub issue #42');
+  expect([...investigationReports.values()][0].body).toContain('now marked as investigating');
+  expect(JSON.stringify([...investigationReports.values()])).not.toMatch(/private-nr-key|actor-token|bot-token|untrusted-key/);
+});
+
+test.each(['completed', 'partial-coding', 'partial-github'])('combined %s report updates investigation only if its winning result contains a GitHub issue', async (kind) => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick('triage')]);
+  const report = kind === 'completed' ? combinedReport : { status: 'partial', analysis: 'A factual brief.',
+    stopped_at: kind === 'partial-coding' ? 'coding' : 'github', ...(kind === 'partial-coding' ? { github: triageGitHub } : {}) };
+  await complete([investigationResponse(JSON.stringify(report))]);
+  expect(mark).toHaveBeenCalledTimes(kind === 'partial-github' ? 0 : 1);
+  expect(comment.body).toContain(kind === 'partial-github' ? 'No GitHub issue result' : 'GitHub issue #42');
+});
+
+test.each(['invalid report', 'disabled', 'not requested', 'expired'])('does not mark investigating for %s', async (failure) => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([failure === 'not requested' ? click('github') : investigationClick()]);
+  const event = investigationResponse(failure === 'invalid report' ? '{"status":"error"}' : undefined);
+  if (failure === 'disabled') Object.assign(event.input_data.global_values, { investigate_on_github_issue: false });
+  if (failure === 'expired') comment.created_date = new Date(now - 31 * 60000).toISOString();
+  await complete([event]);
+  expect(mark).not.toHaveBeenCalled();
+  expect(agent.snapInsResources).not.toHaveBeenCalled();
+});
+
+test.each(['record mismatch', 'wrong actor record', 'source mismatch', 'connection missing', 'connection expired', 'mutation failed'])('preserves the GitHub result and reports investigation failure for %s', async (failure) => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick()]);
+  const event = investigationResponse();
+  const reserved = records.get([...records.keys()].find((key) => key.startsWith('newrelic-investigation-request:'))!)!;
+  if (failure === 'record mismatch') event.payload.ai_agent_response.client_metadata.investigation_record_id = issueId + ':comment/wrong-record';
+  if (failure === 'wrong actor record') reserved.created_by = { id: 'other-bot' };
+  if (failure === 'source mismatch') reserved.body = JSON.stringify({ ...JSON.parse(reserved.body), external_record_id: '999:another-source' });
+  if (failure === 'connection missing') agent.snapInsResources.mockResolvedValue({ data: { keyrings: {} } });
+  if (failure === 'connection expired') agent.snapInsResources.mockResolvedValue({ data: { keyrings: { newrelic_context: { is_expired: true, secret: 'private-nr-key' } } } });
+  if (failure === 'mutation failed') mark.mockRejectedValue(new NewRelicInvestigationError('read_back_pending'));
+  await expect(complete([event])).resolves.toBeUndefined();
+  expect(comment.body).toContain('GitHub issue #42');
+  expect([...investigationReports.values()][0].body).toContain('could not be confirmed');
+  if (failure !== 'mutation failed') expect(mark).not.toHaveBeenCalled();
+  expect(JSON.stringify([...records.values()])).not.toMatch(/private-nr-key|actor-token|bot-token/);
+  expect(JSON.stringify([...investigationReports.values()])).not.toMatch(/private-nr-key|actor-token|bot-token/);
+});
+
+test('duplicate callbacks reuse the investigation outcome without looking up credentials or updating New Relic again', async () => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick()]);
+  const event = investigationResponse();
+  await complete([event]);
+  await complete([event]);
+  expect(mark).toHaveBeenCalledTimes(1);
+  expect(agent.snapInsResources).toHaveBeenCalledTimes(1);
+  expect(investigationReports.size).toBe(1);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+});
+
+test('a failed investigation report can retry after the GitHub result was already published, without a second New Relic write', async () => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick()]);
+  const original = bot.timelineEntriesCreate.getMockImplementation()!;
+  let fail = true;
+  bot.timelineEntriesCreate.mockImplementation(async (request) => {
+    if (fail && request.external_ref.startsWith('newrelic-investigation-report:')) { fail = false; throw new Error('bot-token private-nr-key'); }
+    return original(request);
+  });
+  const event = investigationResponse();
+  await expect(complete([event])).rejects.toThrow('completion failed');
+  expect(comment.body).toContain('GitHub issue #42');
+  await expect(complete([event])).resolves.toBeUndefined();
+  expect(mark).toHaveBeenCalledTimes(1);
+  expect(agent.snapInsResources).toHaveBeenCalledTimes(1);
+  expect(bot.timelineEntriesUpdate).toHaveBeenCalledTimes(1);
+  expect(investigationReports.size).toBe(1);
+  expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|bot-token/);
+});
+
+test('investigation reservation failure leaves the GitHub workflow usable and cannot select a callback user connection', async () => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  const original = bot.timelineEntriesCreate.getMockImplementation()!;
+  bot.timelineEntriesCreate.mockImplementation(async (request) => {
+    if (request.external_ref.startsWith('newrelic-investigation-request:')) throw new Error('bot-token');
+    return original(request);
+  });
+  await expect(fetchContext([investigationClick()])).resolves.toMatchObject({ status: 'success' });
+  await complete([investigationResponse()]);
+  expect(comment.body).toContain('GitHub issue #42');
+  expect([...investigationReports.values()][0].body).toContain('request_invalid');
+  expect(mark).not.toHaveBeenCalled();
+  expect(agent.snapInsResources).not.toHaveBeenCalled();
+});
+
+test('an error that wins terminal arbitration never triggers investigation from a later successful agent reply', async () => {
+  const mark = jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockResolvedValue('investigating');
+  await fetchContext([investigationClick()]);
+  const failure = investigationResponse();
+  failure.payload.ai_agent_response.agent_response = 'error';
+  await complete([failure]);
+  await complete([investigationResponse()]);
+  expect(comment.body).toContain('GitHub issue request unavailable');
+  expect(mark).not.toHaveBeenCalled();
+  expect(agent.snapInsResources).not.toHaveBeenCalled();
 });

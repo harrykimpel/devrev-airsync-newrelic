@@ -251,3 +251,68 @@ test('returns an explicit warning if the result cannot be posted after the ackno
   expect(console.error).toHaveBeenCalledWith('[newrelic-context] acknowledgment:report_failed');
   expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token/);
 });
+
+const investigated = (fields: object = {}) => ({ data: { data: { aiIssuesMarkAsInvestigating: { error: null,
+  result: { action: 'MARK_AS_INVESTIGATING', accountId: 123, issueId: sourceId }, ...fields } } } });
+
+test.each(['US', 'EU'])('uses the captured investigating operation and verifies the exact %s source', async (region) => {
+  post.mockReset().mockResolvedValueOnce(read({ acknowledgedAt: now, investigatedAt: null }))
+    .mockResolvedValueOnce(investigated()).mockResolvedValueOnce(read({ investigatedAt: now }));
+  await expect(api(region).markIssueInvestigating('123', sourceId, createdAt)).resolves.toBe('investigating');
+  expect(post.mock.calls[1][1]).toEqual({ query: expect.stringContaining('aiIssuesMarkAsInvestigating(accountId: $accountId, issueId: $issueId)'),
+    variables: { accountId: 123, issueId: sourceId } });
+  expect(post.mock.calls[1][1].query).toContain('$issueId: ID!');
+  expect(post.mock.calls[0][1].query).toContain('investigatedAt');
+  expect(post.mock.calls[2][1].query).toContain('ids: ["' + sourceId + '"]');
+  expect(post).toHaveBeenCalledTimes(3);
+  expect(axios.create).toHaveBeenCalledWith(expect.objectContaining({ baseURL: region === 'EU' ? 'https://api.eu.newrelic.com/graphql' : 'https://api.newrelic.com/graphql' }));
+});
+
+test.each([
+  [{ investigatedAt: now }, 'already_investigating'],
+  [{ investigatedAt: String(now) }, 'already_investigating'],
+  [{ state: 'CLOSED', investigatedAt: null }, 'closed'],
+])('skips the investigation mutation for source state %j', async (fields, status) => {
+  post.mockReset().mockResolvedValue(read(fields as object));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).resolves.toBe(status);
+  expect(post).toHaveBeenCalledTimes(1);
+});
+
+test('retries investigation verification reads without repeating the mutation', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(investigated())
+    .mockResolvedValueOnce(read({ investigatedAt: null })).mockResolvedValueOnce(read({ investigatedAt: String(now) }));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).resolves.toBe('investigating');
+  expect(post).toHaveBeenCalledTimes(4);
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation '))).toHaveLength(1);
+});
+
+test('reconciles an uncertain investigation response using only the intended source', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce(new Error('private-nr-key'))
+    .mockResolvedValueOnce(read({ investigatedAt: now }));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).resolves.toBe('investigating');
+  expect(post).toHaveBeenCalledTimes(3);
+});
+
+test('never trusts an investigation response when read-back contains only another source issue', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(investigated())
+    .mockResolvedValue(read({ issueId: 'another-source', investigatedAt: now }));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'read_back_pending' });
+  expect(post).toHaveBeenCalledTimes(5);
+});
+
+test('does not report investigation success for an explicit mutation error', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(investigated({ error: 'private-nr-key' }));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'mutation_rejected' });
+  expect(post).toHaveBeenCalledTimes(2);
+});
+
+test.each(['source-issue', 'bad") { injection }'])('rejects invalid investigation UUID %s before any request', async (id) => {
+  await expect(api().markIssueInvestigating('123', id, createdAt)).rejects.toMatchObject({ code: 'invalid_source' });
+  expect(post).not.toHaveBeenCalled();
+});
+
+test('bounds investigation confirmation when an empty response does not lead to a verified source update', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce({ data: { data: {} } }).mockResolvedValue(read({ investigatedAt: null }));
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'mutation_unconfirmed' });
+  expect(post).toHaveBeenCalledTimes(5);
+});

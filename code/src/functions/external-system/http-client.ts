@@ -23,6 +23,17 @@ export class NewRelicAcknowledgmentError extends Error {
 
 export type AcknowledgmentStatus = 'acknowledged' | 'already_acknowledged' | 'closed';
 
+export class NewRelicInvestigationError extends Error {
+  constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending') {
+    super('The New Relic investigation status could not be confirmed.');
+  }
+}
+
+function positiveEpoch(value: unknown): boolean {
+  const timestamp = typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value) ? Number(value) : value;
+  return typeof timestamp === 'number' && Number.isSafeInteger(timestamp) && timestamp > 0;
+}
+
 export class HttpClient {
   private readonly http: AxiosInstance;
   readonly region: 'US' | 'EU';
@@ -82,7 +93,7 @@ export class HttpClient {
     return data.actor.accounts;
   }
 
-  async getIssue(accountId: string, issueId: string, createdAt: number): Promise<NewRelicIssue> {
+  async getIssue(accountId: string, issueId: string, createdAt: number, includeInvestigation = false): Promise<NewRelicIssue> {
     if (!/^[1-9]\d*$/.test(accountId) || Number(accountId) > 2147483647 ||
       !issueId || issueId.length > 256 || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > Date.now()) {
       throw new Error('Invalid New Relic issue reference or creation date.');
@@ -94,7 +105,7 @@ export class HttpClient {
       query($accountId: Int!) {
         actor { account(id: $accountId) { aiIssues {
           issues(filter: { ids: [${JSON.stringify(issueId)}] }, timeWindow: { startTime: ${start}, endTime: ${Date.now()} }) {
-            issues { issueId title priority state createdAt updatedAt entityNames entityGuids acknowledgedAt }
+            issues { issueId title priority state createdAt updatedAt entityNames entityGuids acknowledgedAt ${includeInvestigation ? 'investigatedAt' : ''} }
           }
         } } }
       }`, { accountId: Number(accountId) });
@@ -163,6 +174,41 @@ export class HttpClient {
       } catch { diagnostic = 'read_back_failed'; }
     }
     throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic ?? diagnostic);
+  }
+
+  async markIssueInvestigating(accountId: string, issueId: string, createdAt: number): Promise<'investigating' | 'already_investigating' | 'closed'> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) throw new NewRelicInvestigationError('invalid_source');
+    let before: NewRelicIssue;
+    try { before = await this.getIssue(accountId, issueId, createdAt, true); }
+    catch { throw new NewRelicInvestigationError('source_read_failed'); }
+    if (before.state === 'CLOSED') return 'closed';
+    if (positiveEpoch(before.investigatedAt)) return 'already_investigating';
+    if (!['CREATED', 'ACTIVATED', 'DEACTIVATED'].includes(before.state)) throw new NewRelicInvestigationError('unsupported_state');
+    let uncertain = false;
+    try {
+      // Observed from New Relic's Mark as investigating UI operation. Do not
+      // assume a particular action string; verify the exact source afterwards.
+      const data = await this.query<{ aiIssuesMarkAsInvestigating?: { error?: unknown } }>(`
+        mutation markAsInvestigate($accountId: Int!, $issueId: ID!) {
+          aiIssuesMarkAsInvestigating(accountId: $accountId, issueId: $issueId) {
+            result { accountId action issueId }
+            error
+          }
+        }`, { accountId: Number(accountId), issueId });
+      if (data.aiIssuesMarkAsInvestigating?.error != null) throw new NewRelicInvestigationError('mutation_rejected');
+      uncertain = !data.aiIssuesMarkAsInvestigating || data.aiIssuesMarkAsInvestigating.error !== null;
+    } catch (error) {
+      if (error instanceof NewRelicInvestigationError) throw error;
+      uncertain = true; // Lost response: reconcile with reads, never resend.
+    }
+    for (const delay of [0, 500, 1500]) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const after = await this.getIssue(accountId, issueId, createdAt, true);
+        if (positiveEpoch(after.investigatedAt)) return 'investigating';
+      } catch { /* Keep verification bounded and errors credential-free. */ }
+    }
+    throw new NewRelicInvestigationError(uncertain ? 'mutation_unconfirmed' : 'read_back_pending');
   }
 
   async nrql(accountId: string, query: string): Promise<Record<string, unknown>[]> {
