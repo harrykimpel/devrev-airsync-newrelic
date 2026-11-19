@@ -56,7 +56,7 @@ inputs:
       is_required: false
       default_value: false
       ui:
-        display_name: Mark New Relic issue as investigating after GitHub handoff
+        display_name: Mark as investigating after GitHub handoff
     - name: analysis_agent_id
       description: Full DON of a published internal DevRev agent in this organization. Used by both analysis buttons.
       field_type: text

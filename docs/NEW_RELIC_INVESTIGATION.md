@@ -1,6 +1,13 @@
-# Mark a New Relic issue as investigating (1.7.0)
+# Mark a New Relic issue as investigating (1.7.1)
 
-Enable **Mark New Relic issue as investigating after GitHub handoff** in the
+Version 1.7.1 fixes the 1.7.0 deployment error: the organization setting's
+58-character display name exceeded DevRev's 50-character limit. The setting is
+now **Mark as investigating after GitHub handoff** (42 characters); its internal
+name and behavior are unchanged. If deployment reports this manifest parse
+error followed by missing-version-ID errors, the parse error is the cause:
+version creation was rejected. Pull this patch before retrying.
+
+Enable **Mark as investigating after GitHub handoff** in the
 snap-in's organization configuration to report the next step after acknowledgment.
 This optional boolean (`investigate_on_github_issue`) defaults to false.
 
@@ -108,7 +115,7 @@ git pull --ff-only origin main
 npm run upgrade -- '<current-snap-in-version-DON>'
 ```
 
-Enable **Mark New Relic issue as investigating after GitHub handoff** in the
+Enable **Mark as investigating after GitHub handoff** in the
 organization configuration, then save. Keep your existing personal connection.
 On an imported open New Relic issue, run **Create GitHub issue** after analysis
 or **Triage and start fix**. Confirm the GitHub link appears, followed by a
