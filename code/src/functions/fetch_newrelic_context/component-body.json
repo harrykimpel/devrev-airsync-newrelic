@@ -9,7 +9,7 @@
           "elements": [
             {
               "type": "plain_text",
-              "text": "Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; the brief and verified links appear in the internal discussion."
+              "text": "Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; it also acknowledges the source alert when enabled in snap-in settings. The brief and verified links appear in the internal discussion."
             }
           ]
         },
@@ -97,6 +97,19 @@
               "action_type": "remote",
               "value": "coding_status",
               "text": { "type": "plain_text", "text": "Check coding progress" }
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
+              "value": "acknowledge",
+              "text": { "type": "plain_text", "text": "Acknowledge in New Relic" }
             }
           ]
         }

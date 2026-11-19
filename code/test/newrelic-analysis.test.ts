@@ -6,7 +6,7 @@ import fetchContext from '../src/functions/fetch_newrelic_context';
 import complete from '../src/functions/complete_newrelic_analysis';
 import { analysisPrompt, analysisReference, PENDING_PREFIX, RESPONSE_SOURCE } from '../src/functions/fetch_newrelic_context/analysis';
 import { planContext } from '../src/functions/fetch_newrelic_context/context';
-import { HttpClient } from '../src/functions/external-system/http-client';
+import { HttpClient, NewRelicAcknowledgmentError } from '../src/functions/external-system/http-client';
 import { issuePermalink } from '../src/functions/external-system/links';
 import { githubRepository, githubResult } from '../src/functions/fetch_newrelic_context/github-policy';
 import { triageResult } from '../src/functions/fetch_newrelic_context/triage-policy';
@@ -600,4 +600,70 @@ test('coding progress consumes the combined GitHub result while Start reuses the
   const input = JSON.parse(agent.aiAgentEventsExecuteAsync.mock.calls[0][0].event.input_message.message.split('\nINPUT\n')[1]);
   expect(input).toMatchObject({ operation: 'coding_status', issue_number: 42, issue_url: triageGitHub.url });
   expect(HttpClient.prototype.nrql).not.toHaveBeenCalled();
+});
+
+test.each([undefined, false, 'true'])('triage keeps acknowledgment opt-in for setting %j', async (value) => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: value });
+  await fetchContext([input]);
+  expect(acknowledge).not.toHaveBeenCalled();
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+});
+
+test('opted-in triage acknowledges using the same user connection before collecting telemetry and starting the agent', async () => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  await expect(fetchContext([input])).resolves.toMatchObject({ status: 'success', acknowledgment_status: 'acknowledged' });
+  expect(acknowledge).toHaveBeenCalledWith('123', issue.issueId, issue.createdAt);
+  expect(acknowledge.mock.invocationCallOrder[0]).toBeLessThan((HttpClient.prototype.nrql as jest.Mock).mock.invocationCallOrder[0]);
+  expect(actor.timelineEntriesCreate).toHaveBeenCalledWith(expect.objectContaining({
+    object: issueId, visibility: 'internal', body: expect.stringContaining('acknowledgment was verified'),
+  }), { timeout: 10000 });
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(agent.aiAgentEventsExecuteAsync.mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token|acknowledgment_status/);
+  await complete([response('message', JSON.stringify(combinedReport))]);
+  expect(comment.body).toContain('GitHub issue #42');
+  expect(acknowledge).toHaveBeenCalledTimes(1); // No key reuse or acknowledgment from the asynchronous callback.
+});
+
+test.each(['rejected', 'unconfirmed'] as const)('an acknowledgment that is %s does not stop opted-in triage', async (code) => {
+  jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockRejectedValue(new NewRelicAcknowledgmentError(code));
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  await expect(fetchContext([input])).resolves.toMatchObject({ status: 'success', acknowledgment_status: code });
+  expect(actor.timelineEntriesCreate).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(code === 'rejected' ? 'did not accept' : 'could not be confirmed') }), { timeout: 10000 });
+  expect(HttpClient.prototype.nrql).toHaveBeenCalledTimes(6);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  expect(bot.timelineEntriesCreate).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('triage requested') }), { timeout: 10000 });
+});
+
+test('triage still starts if its acknowledgment result cannot be posted', async () => {
+  jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  actor.timelineEntriesCreate.mockRejectedValueOnce(new Error('private-nr-key actor-token'));
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  await expect(fetchContext([input])).resolves.toMatchObject({ status: 'success', detail: expect.stringContaining('could not be posted') });
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  expect(console.error).toHaveBeenCalledWith('[newrelic-context] acknowledgment:report_failed');
+});
+
+test.each(['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding_status'])('the acknowledgment setting does not make the %s action acknowledge', async (mode) => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click(mode);
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  // Some standalone handoffs need a previous result; their preflight can reject,
+  // but neither a successful read-only action nor a rejected handoff may write.
+  await fetchContext([input]).catch(() => undefined);
+  expect(acknowledge).not.toHaveBeenCalled();
+});
+
+test('invalid triage configuration rejects before any acknowledgment', async () => {
+  const acknowledge = jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged');
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true, github_issue_repository: '' });
+  await expect(fetchContext([input])).rejects.toThrow();
+  expect(acknowledge).not.toHaveBeenCalled();
+  expect(actor.timelineEntriesCreate).not.toHaveBeenCalled();
 });
