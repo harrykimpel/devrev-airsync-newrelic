@@ -50,6 +50,13 @@ inputs:
       default_value: false
       ui:
         display_name: Acknowledge in New Relic when triage starts
+    - name: investigate_on_github_issue
+      description: After a validated GitHub issue result from Create GitHub issue or Triage and start fix, mark the source New Relic issue as investigating using the initiating user's saved connection. Update failures are reported separately.
+      field_type: bool
+      is_required: false
+      default_value: false
+      ui:
+        display_name: Mark New Relic issue as investigating after GitHub handoff
     - name: analysis_agent_id
       description: Full DON of a published internal DevRev agent in this organization. Used by both analysis buttons.
       field_type: text
@@ -114,7 +121,7 @@ keyrings:
   user:
     - name: newrelic_context
       display_name: New Relic context connection
-      description: Your New Relic user key with query access to the source alert account; acknowledgment also requires permission to manage alert issues. Select the matching regional connection.
+      description: Your New Relic user key with query access to the source alert account; acknowledgment and investigation updates also require permission to manage alert issues. Select the matching regional connection.
       types:
         - newrelic-user-key
 

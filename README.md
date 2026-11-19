@@ -115,6 +115,15 @@ Open an imported issue and find the **New Relic incident triage** component:
   failures do not stop the combined workflow. See the
   [acknowledgment setup and verification guide](docs/NEW_RELIC_ACKNOWLEDGMENT.md).
 
+Version 1.7.0 can also mark the source New Relic issue as **investigating** after
+the GitHub agent confirms a created or existing issue. Enable **Mark New Relic
+issue as investigating after GitHub handoff** in the snap-in's organization
+configuration (off by default). It works with **Create GitHub issue** and
+**Triage and start fix**, using the initiating user's saved New Relic connection.
+The GitHub result is published first; the New Relic status is reported separately.
+No additional key, ingest license key, MCP connection or agent instruction change
+is needed. See the [investigation status guide](docs/NEW_RELIC_INVESTIGATION.md).
+
 Version 1.6.1 improves acknowledgment confirmation with bounded read-only retries
 and diagnostic codes for source lookup, mutation receipt and read-back failures.
 It reconciles uncertain mutation responses against the exact source issue and

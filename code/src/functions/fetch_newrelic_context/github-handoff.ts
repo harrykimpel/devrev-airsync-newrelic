@@ -6,11 +6,13 @@ import { AnalysisError, analysisReference, configuredAgent, githubRequestPrefix,
 import { redact } from './context';
 import { githubRepository } from './github-policy';
 import { triageAnalysis } from './triage-policy';
+import { InvestigationRequest } from './investigation';
 
 export async function handoffGitHub(options: {
   endpoint: string; actorToken: string; serviceToken: string; serviceAccountId: string;
   snapInId: string; issue: publicSDK.Work; sourceUrl: string; requestHash: string; eventSource: string;
   agentValue: unknown; repositoryValue: unknown;
+  investigation?: InvestigationRequest;
 }) {
   const repository = githubRepository(options.repositoryValue);
   if (!repository) throw new AnalysisError('missing_github_repository', 'Set GitHub issue repository to owner/repository in the snap-in configuration.');

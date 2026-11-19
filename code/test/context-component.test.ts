@@ -59,6 +59,7 @@ test('renders both actions using the snap-kit response envelope without a button
   ]);
   expect(manifest.inputs.organization).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: 'acknowledge_on_triage', field_type: 'bool', is_required: false, default_value: false }),
+    expect.objectContaining({ name: 'investigate_on_github_issue', field_type: 'bool', is_required: false, default_value: false }),
     expect.objectContaining({ name: 'coding_agent_id', is_required: false, default_value: '' }),
     expect.objectContaining({ name: 'coding_agent_provider', is_required: false, default_value: 'copilot' }),
     expect.objectContaining({ name: 'coding_agent_base_branch', is_required: false, default_value: '' }),

@@ -155,12 +155,14 @@ async function handleEvent(input: unknown) {
   if (!evidenceOnly && !acknowledgmentOnly && (!nonEmpty(eventSource) || !nonEmpty(serviceToken) || !nonEmpty(serviceAccountId))) {
     throw new AnalysisError('missing_analysis_context', 'The snap-in is missing its analysis response event source or service context. Upgrade the current installation with the analysis manifest.');
   }
+  const investigation = (github || triage) && event.input_data?.global_values?.investigate_on_github_issue === true
+    ? { actorId: event.payload.actor_id ?? '', createdAt: Date.parse(work.created_date ?? ''), externalRecordId: recordId ?? '' } : undefined;
   if (github) {
     return handoffGitHub({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
       serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
       snapInId: event.context.snap_in_id, issue: work, sourceUrl, requestHash,
       agentValue: event.input_data?.global_values?.github_issue_agent_id,
-      repositoryValue: event.input_data?.global_values?.github_issue_repository });
+      repositoryValue: event.input_data?.global_values?.github_issue_repository, investigation });
   }
   if (handoff) {
     const globals = event.input_data?.global_values;
@@ -191,6 +193,7 @@ async function handleEvent(input: unknown) {
       serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
       snapInId: event.context.snap_in_id, issueId: work.id, agentId, requestHash, sourceUrl,
       ...(triage ? { triage: triage.binding } : {}),
+      investigation,
       prompt: triage ? triagePrompt({ title: work.title ?? '', issueId: work.id, sourceUrl, issue, snapshots, requestHash,
         binding: triage.binding, baseRef: triage.baseRef, secrets: [key, actorToken, serviceToken!] })
         : analysisPrompt(work.title ?? '', sourceUrl, issue, snapshots, mode, [key, actorToken, serviceToken!]),

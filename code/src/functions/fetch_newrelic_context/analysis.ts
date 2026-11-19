@@ -8,7 +8,8 @@ import { ContextPlan, QueryResult, redact } from './context';
 import { CodingBinding, codingProvider, codingResult, CODING_PENDING_PREFIX, CODING_RESULT_PREFIX } from './coding-policy';
 import { githubRepository, githubResult, GITHUB_PENDING_PREFIX, GITHUB_RESULT_PREFIX } from './github-policy';
 import { persistRequestRecord, readRequestRecord } from './request-record';
-import { TriageBinding, triageResult, TRIAGE_PENDING_PREFIX, TRIAGE_RESULT_PREFIX } from './triage-policy';
+import { TriageBinding, triageResult, triageGitHubBody, TRIAGE_PENDING_PREFIX, TRIAGE_RESULT_PREFIX } from './triage-policy';
+import { completeInvestigation, InvestigationRequest, reserveInvestigation } from './investigation';
 
 export interface Snapshot { mode: 'alert' | 'recent'; plan: ContextPlan; results: QueryResult[] }
 export const RESPONSE_SOURCE = 'newrelic-agent-responses';
@@ -75,7 +76,7 @@ interface Binding {
   coding?: CodingBinding;
   triage?: TriageBinding;
 }
-export interface AnalysisMetadata extends Binding { comment_id: string; binding_record_id?: string }
+export interface AnalysisMetadata extends Binding { comment_id: string; binding_record_id?: string; investigation_requested?: boolean; investigation_record_id?: string }
 
 export function githubRequestPrefix(snapInId: string, issueId: string, agentId: string, requestHash: string, repository: string, sourceUrl: string): string {
   return 'newrelic-github:' + createHash('sha256').update(JSON.stringify([
@@ -134,6 +135,7 @@ interface StartOptions {
   github?: { repository: string; analysis_comment_id: string };
   coding?: CodingBinding;
   triage?: TriageBinding;
+  investigation?: InvestigationRequest;
 }
 
 export async function startAnalysis(options: StartOptions) {
@@ -185,6 +187,18 @@ export async function startAnalysis(options: StartOptions) {
       reference: recordReference('binding', reference), body: fingerprint });
     if (stored.body !== fingerprint) throw new AnalysisError('invalid_analysis_binding', 'The GitHub request is bound to a different completed brief.');
     metadata.binding_record_id = stored.id;
+  }
+  if (options.investigation && (options.github || options.triage)) {
+    metadata.investigation_requested = true;
+    try {
+      metadata.investigation_record_id = await reserveInvestigation({ bot, botId: options.serviceAccountId,
+        issueId: options.issueId, commentId: comment.id, requestReference: reference,
+        snapInId: options.snapInId, sourceUrl: options.sourceUrl, request: options.investigation });
+    } catch {
+      // Keep the GitHub workflow available, but never use an unreserved actor
+      // identity to fetch a user's New Relic key in a callback.
+      console.info('[newrelic-context] investigation:reservation_failed');
+    }
   }
   try {
     const agent = client.setupBeta({ endpoint: options.endpoint, token: options.actorToken });
@@ -276,11 +290,34 @@ export async function finishAnalysis(input: unknown) {
     if (stored.body !== githubBinding(metadata)) throw new AnalysisError('invalid_analysis_binding', 'The GitHub response does not match the reserved source brief.');
     console.info('[newrelic-context] callback:binding_ready');
   }
-  if (!('body' in entry) || typeof entry.body !== 'string' || !entry.body.startsWith(triage ? TRIAGE_PENDING_PREFIX : coding ? CODING_PENDING_PREFIX : github ? GITHUB_PENDING_PREFIX : PENDING_PREFIX)) return { status: 'ignored' };
+  if (!('body' in entry) || typeof entry.body !== 'string') return { status: 'ignored' };
+  const pending = entry.body.startsWith(triage ? TRIAGE_PENDING_PREFIX : coding ? CODING_PENDING_PREFIX : github ? GITHUB_PENDING_PREFIX : PENDING_PREFIX);
+  const shouldInvestigate = (body: string) => metadata.investigation_requested === true && globals?.investigate_on_github_issue === true &&
+    ((github && body.startsWith(GITHUB_RESULT_PREFIX)) || (triage && !!triageGitHubBody(body)));
+  const investigate = async (body: string) => {
+    if (!shouldInvestigate(body)) return;
+    // A malformed callback record ID cannot be used as a different user's key source.
+    if (metadata.investigation_record_id !== undefined && typeof metadata.investigation_record_id !== 'string') {
+      throw new AnalysisError('invalid_analysis_binding', 'Invalid investigation record metadata.');
+    }
+    await completeInvestigation({ bot, botId, issueId: metadata.issue_id, commentId: metadata.comment_id,
+      requestReference: analysisReference(metadata), snapInId: metadata.snap_in_id, sourceUrl,
+      endpoint, token, recordId: metadata.investigation_record_id });
+  };
+  if (!pending && !shouldInvestigate(entry.body)) return { status: 'ignored' };
   const age = Date.now() - Date.parse(entry.created_date ?? '');
   if (!Number.isFinite(age) || age < -60000 || age > ANALYSIS_TTL_MS) {
     console.info('[newrelic-context] callback:expired');
     return { status: 'expired' };
+  }
+  if (!pending) {
+    // A failed investigation report can retry after the GitHub result is already
+    // visible, without rerunning the agent or overwriting the terminal winner.
+    const winner = await readRequestRecord({ bot, issueId: metadata.issue_id, commentId: metadata.comment_id, botId,
+      reference: recordReference('terminal', analysisReference(metadata) + ':' + metadata.comment_id) });
+    if (winner.body !== entry.body) throw new AnalysisError('invalid_analysis_binding', 'The completed discussion does not match its terminal record.');
+    await investigate(winner.body);
+    return { status: 'success' };
   }
   const message = typeof response.message === 'string' ? redact(response.message, [token]).trim() : '';
   const githubBody = github && response.agent_response === 'message' ? githubResult(message, metadata.github!.repository) : undefined;
@@ -301,6 +338,7 @@ export async function finishAnalysis(input: unknown) {
     reference: recordReference('terminal', analysisReference(metadata) + ':' + metadata.comment_id), body });
   console.info('[newrelic-context] callback:discussion_update');
   await bot.timelineEntriesUpdate({ id: entry.id, type: publicSDK.TimelineEntriesUpdateRequestType.TimelineComment, body: winner.body }, { timeout: 10000 });
+  await investigate(winner.body);
   console.info(triage ? '[newrelic-context] triage:complete' : coding ? '[newrelic-context] coding:complete' : github ? '[newrelic-context] github:complete' : '[newrelic-context] analysis:complete');
   return { status: 'success' };
 }

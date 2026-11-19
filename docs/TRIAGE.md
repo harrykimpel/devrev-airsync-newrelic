@@ -1,5 +1,12 @@
 # One-click New Relic incident triage (1.5.0)
 
+Version 1.7.0 adds **Mark New Relic issue as investigating after GitHub handoff**,
+an optional organization setting (off by default). The completed combined callback
+must contain a validated GitHub issue before this update runs. A partial result
+that reached GitHub but stopped at coding also qualifies; an analysis-only partial
+result does not. The individual Create GitHub issue action supports the same
+setting. See [NEW_RELIC_INVESTIGATION.md](NEW_RELIC_INVESTIGATION.md).
+
 Version 1.6.0 also offers optional source acknowledgment before these stages.
 Enable **Acknowledge in New Relic when triage starts** in the snap-in's
 organization configuration; it is off by default. It uses the clicking user's
