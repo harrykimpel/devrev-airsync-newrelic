@@ -107,9 +107,9 @@ test.each([
   expect(post).toHaveBeenCalledTimes(5);
 });
 
-test.each([null, 0, -1, '2026-11-19', undefined, true, {}, [], '9007199254740993', ' 1795089600000', '1e12'])('requires a positive acknowledgment timestamp on read-back (%j)', async (acknowledgedAt) => {
-  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValue(read({ acknowledgedAt }));
-  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'read_back_pending' });
+test.each([null, 0, -1, '2026-11-19', undefined, true, {}, [], '9007199254740993', ' 1795089600000', '1e12'])('does not reconcile an uncertain receipt using an invalid timestamp (%j)', async (acknowledgedAt) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation({ result: null })).mockResolvedValue(read({ acknowledgedAt }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'receipt_missing' });
   expect(post).toHaveBeenCalledTimes(5);
 });
 
@@ -150,9 +150,11 @@ test('a later delivery reads the source first when a previous write and all its 
   expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
 });
 
-test('requires read-back even after a valid mutation response', async () => {
+test('keeps a valid ACK request confirmed by the API when subsequent queries fail', async () => {
   post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockRejectedValue(new Error('private-nr-key'));
-  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'read_back_failed' });
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe('acknowledged_by_api');
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:api_confirmed code=read_back_failed');
+  expect(post).toHaveBeenCalledTimes(5);
 });
 
 test('verifies a delayed acknowledgment with bounded read retries and a single mutation', async () => {
@@ -190,13 +192,14 @@ test('does not conflate an unreadable source before writing with an uncertain mu
   expect(JSON.stringify(timelineEntriesCreate.mock.calls)).not.toContain('private-nr-key');
 });
 
-test('explains pending read-back without implying the accepted mutation was rejected', async () => {
+test('reports the exact successful ACK response as API-confirmed without claiming verified query state', async () => {
   post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValue(read({ acknowledgedAt: null }));
-  await expect(run([click()])).resolves.toMatchObject({ acknowledgment_status: 'unconfirmed', detail: expect.stringContaining('New Relic accepted the acknowledgment') });
-  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:diagnostic code=read_back_pending');
+  await expect(run([click()])).resolves.toMatchObject({ acknowledgment_status: 'acknowledged_by_api', detail: expect.stringContaining('New Relic confirmed the acknowledgment request') });
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:api_confirmed code=read_back_pending');
   const body = timelineEntriesCreate.mock.calls[0][0].body;
-  expect(body).toContain('Diagnostic: read_back_pending');
-  expect(body).not.toContain('connection permissions');
+  expect(body).toContain('follow-up state check was inconclusive');
+  expect(body).not.toMatch(/Diagnostic:|connection permissions|verified by reading|could not be confirmed/);
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
 });
 
 test.each(['US', 'EU'] as const)('standalone action authorizes the selected issue and posts its verified %s result without an agent', async (region) => {
@@ -315,4 +318,54 @@ test('bounds investigation confirmation when an empty response does not lead to 
   post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce({ data: { data: {} } }).mockResolvedValue(read({ investigatedAt: null }));
   await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'mutation_unconfirmed' });
   expect(post).toHaveBeenCalledTimes(5);
+});
+
+test.each([
+  [{ message: 'Cannot query field "aiIssuesMarkAsInvestigating" on type "RootMutationType". private-nr-key' }, 'operation_unavailable'],
+  [{ message: 'Variable "$issueId" of type "ID!" used in position expecting type "String!". private-nr-key' }, 'validation_error'],
+  [{ extensions: { errorClass: 'ACCESS_DENIED' }, message: 'private-nr-key' }, 'access_denied'],
+  [{ extensions: { errorClass: 'GRAPHQL_VALIDATION_FAILED' }, message: 'private-nr-key' }, 'validation_error'],
+  [{ extensions: { errorClass: 'THROTTLED' }, message: 'private-nr-key' }, 'throttled'],
+  [{ extensions: { errorClass: 'private-nr-key' }, message: 'private-nr-key' }, 'graphql_error'],
+])('retains only safe investigation diagnostics from GraphQL errors (%j)', async (error, reason) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce({ data: { errors: [error] } }).mockResolvedValue(read());
+  const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+  expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason });
+  expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation '))).toHaveLength(1);
+});
+
+test.each([400, 401, 403, 429, 503])('retains HTTP %s without credentials when an investigation mutation fails', async (status) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce({ isAxiosError: true,
+    response: { status, data: 'private-nr-key' }, config: { headers: { 'API-Key': 'private-nr-key' } },
+  }).mockResolvedValue(read());
+  const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+  expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason: 'http_error', httpStatus: status });
+  expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  expect(post).toHaveBeenCalledTimes(5);
+});
+
+test('distinguishes network errors, empty responses and unexpected response envelopes', async () => {
+  const cases = [
+    { response: { isAxiosError: true, config: { headers: { 'API-Key': 'private-nr-key' } } }, reason: 'network_error', rejected: true },
+    { response: { data: {} }, reason: 'empty_response' },
+    { response: { data: { data: {} } }, reason: 'unexpected_response' },
+    { response: { data: { data: {}, errors: 'private-nr-key' } }, reason: 'unexpected_response' },
+    { response: { data: { data: {}, errors: [null] } }, reason: 'unexpected_response' },
+  ];
+  for (const scenario of cases) {
+    post.mockReset().mockResolvedValueOnce(read());
+    if (scenario.rejected) post.mockRejectedValueOnce(scenario.response);
+    else post.mockResolvedValueOnce(scenario.response);
+    post.mockResolvedValue(read());
+    const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+    expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason: scenario.reason });
+    expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  }
+});
+
+test('retains the source-read failure reason without sending an investigation mutation', async () => {
+  post.mockReset().mockResolvedValue({ data: { errors: [{ extensions: { errorClass: 'ACCESS_DENIED' }, message: 'private-nr-key' }] } });
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'source_read_failed', reason: 'access_denied' });
+  expect(post).toHaveBeenCalledTimes(1);
 });

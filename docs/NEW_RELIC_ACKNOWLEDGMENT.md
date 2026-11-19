@@ -1,4 +1,4 @@
-# Report acknowledgment to New Relic (1.7.2)
+# Report acknowledgment to New Relic (1.7.3)
 
 The issue component provides **Acknowledge in New Relic**. It acknowledges the
 original New Relic Alert Intelligence issue through NerdGraph and posts the
@@ -74,20 +74,33 @@ UUID issue identifier, a valid account, and a recognized open issue state.
 
 For `aiIssuesAckIssue`, an HTTP success is insufficient. The connector checks the
 mutation's own `error`, the returned `ACK` action, and the exact account/issue
-identifiers. A business-logic error is rejected. If a response is lost or its
-receipt is unexpected, version 1.6.1 reconciles by reading the originally
+identifiers. A business-logic error is rejected. An error-free response with
+`action: ACK`, the matching numeric account ID and exact issue UUID confirms the acknowledgment
+request. From version 1.7.3, an inconclusive follow-up query does not downgrade
+that successful operation to an unconfirmed write.
+
+If a response is lost or its receipt is unexpected, version 1.6.1 reconciles by reading the originally
 requested source account/UUID; it never switches to identifiers from the receipt
 or infers success from that receipt. It requires a positive
-`acknowledgedAt` timestamp before reporting verified acknowledgment. Numeric
+`acknowledgedAt` timestamp before reporting independently verified source state. Numeric
 timestamps and canonical decimal strings are accepted; dates, booleans and
 unsafe numbers are not coerced into acknowledgment.
 
 Version 1.6.1 checks the source up to three times after an accepted or uncertain
 mutation, with 500 ms and 1,500 ms delays before the second and third reads. This allows
 the issue-query results time to reflect the write. Only read-back is retried;
-the mutation is still sent at most once per invocation. If source verification
-cannot confirm the acknowledgment, the outcome remains **unconfirmed**. Inspect the source before
-retrying. A deliberate retry reads the current source state first rather than
+the mutation is still sent at most once per invocation. The outcomes distinguish:
+
+- `acknowledged`: a source read verified the acknowledgment timestamp.
+- `acknowledged_by_api`: the exact error-free ACK response confirmed the request,
+  but follow-up source-state verification was inconclusive. The comment says
+  **New Relic confirmed the acknowledgment request for this alert. The follow-up
+  state check was inconclusive.** It does not claim a timestamp was read or that
+  another background verification job is running.
+- `unconfirmed`: neither a valid mutation receipt nor a source read confirmed the
+  acknowledgment. Inspect New Relic before retrying.
+
+A deliberate retry reads the current source state first rather than
 automatically replaying the write.
 
 Failure comments and logs now include a fixed diagnostic code, without raw
@@ -99,15 +112,17 @@ response data. Important distinctions:
 - `receipt_*`: the mutation receipt was missing or did not match the expected
   action/account/issue, and source-state verification did not confirm acknowledgment.
   Do not assume the write failed; inspect New Relic.
-- `read_back_pending`: New Relic accepted the write but none of the three reads
-  showed the acknowledgment timestamp yet. The comment explicitly distinguishes
-  this from missing connection permissions.
-- `read_back_failed`: New Relic accepted the write but the final verification
-  query failed.
+- `acknowledgment:api_confirmed code=read_back_pending`: the exact ACK receipt
+  confirmed the request, while the three reads did not return a usable timestamp.
+- `acknowledgment:api_confirmed code=read_back_failed`: the exact ACK receipt
+  confirmed the request, but the final source query failed.
 
 If the source already shows **Acknowledged by ...** while DevRev says unconfirmed,
-the acknowledgment may have succeeded and only confirmation failed. After
-upgrading, share the diagnostic code instead of credentials or API payloads:
+the acknowledgment may have succeeded and only source verification failed.
+In 1.7.2 and earlier, even a valid ACK receipt could produce the misleading
+`read_back_pending` warning. Version 1.7.3 reports that case as API-confirmed;
+it does not assume whether the missing timestamp is caused by indexing delay or
+response encoding. After upgrading, share the diagnostic code instead of credentials or API payloads:
 
 ```bash
 devrev snap_in_package logs --query newrelic-context --limit 100 --org '<org>' --usr '<email>'

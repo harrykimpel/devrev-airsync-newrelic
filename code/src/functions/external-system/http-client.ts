@@ -3,8 +3,22 @@ import { AirSyncEvent } from '@devrev/airsync-sdk';
 
 import { IssuePage, NewRelicAccount, NewRelicIssue } from './types';
 
+export type NewRelicRequestDiagnostic = 'unknown' | 'access_denied' | 'operation_unavailable' | 'validation_error' |
+  'graphql_error' | 'throttled' | 'http_error' | 'network_error' | 'empty_response' | 'unexpected_response';
+
+interface GraphQLFailure { message?: string; extensions?: { errorClass?: string } }
+function graphqlDiagnostic(errors: GraphQLFailure[]): NewRelicRequestDiagnostic {
+  if (errors.some((error) => ['ACCESS_DENIED', 'FORBIDDEN', 'UNAUTHORIZED', 'UNAUTHENTICATED'].includes(error.extensions?.errorClass ?? ''))) return 'access_denied';
+  if (errors.some((error) => typeof error.message === 'string' && /cannot query field\s+["']aiIssuesMarkAsInvestigating["']/i.test(error.message))) return 'operation_unavailable';
+  if (errors.some((error) => ['GRAPHQL_VALIDATION_FAILED', 'VALIDATION_ERROR', 'BAD_USER_INPUT'].includes(error.extensions?.errorClass ?? '') ||
+    (typeof error.message === 'string' && /cannot query field|unknown argument|unknown type|variable .+ (expected|expecting)|must (not )?have a selection/i.test(error.message)))) return 'validation_error';
+  if (errors.some((error) => error.extensions?.errorClass === 'THROTTLED')) return 'throttled';
+  return 'graphql_error';
+}
+
 export class NewRelicApiError extends Error {
-  constructor(message: string, public readonly delaySeconds?: number) {
+  constructor(message: string, public readonly delaySeconds?: number,
+    public readonly diagnostic: NewRelicRequestDiagnostic = 'unknown', public readonly httpStatus?: number) {
     super(message);
   }
 }
@@ -21,10 +35,11 @@ export class NewRelicAcknowledgmentError extends Error {
   }
 }
 
-export type AcknowledgmentStatus = 'acknowledged' | 'already_acknowledged' | 'closed';
+export type AcknowledgmentStatus = 'acknowledged' | 'acknowledged_by_api' | 'already_acknowledged' | 'closed';
 
 export class NewRelicInvestigationError extends Error {
-  constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending' | 'sync_read_only') {
+  constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending' | 'sync_read_only',
+    readonly reason?: NewRelicRequestDiagnostic, readonly httpStatus?: number) {
     super('The New Relic investigation status could not be confirmed.');
   }
 }
@@ -65,24 +80,30 @@ export class HttpClient {
   private async query<T>(query: string, variables: object = {}): Promise<T> {
     if (this.syncReadOnly && /^\s*mutation\b/.test(query)) throw new NewRelicApiError('AirSync clients cannot mutate New Relic issues.');
     try {
-      const response = await this.http.post<{ data?: T; errors?: { extensions?: { errorClass?: string } }[] }>('', { query, variables });
-      if (response.data.errors?.length) {
-        const retryable = response.data.errors.some((e) => e.extensions?.errorClass === 'THROTTLED');
-        throw new NewRelicApiError('New Relic rejected the NerdGraph query. Check key permissions and API schema.', retryable ? 60 : undefined);
+      const response = await this.http.post<{ data?: T; errors?: GraphQLFailure[] }>('', { query, variables });
+      const errors = response.data?.errors;
+      if (errors != null && (!Array.isArray(errors) || errors.some((error) => !error || typeof error !== 'object' || Array.isArray(error)))) {
+        throw new NewRelicApiError('New Relic returned an invalid GraphQL error response.', undefined, 'unexpected_response');
       }
-      if (!response.data.data) throw new NewRelicApiError('New Relic returned no query data.');
+      if (Array.isArray(response.data?.errors) && response.data.errors.length) {
+        const retryable = response.data.errors.some((e) => e.extensions?.errorClass === 'THROTTLED');
+        throw new NewRelicApiError('New Relic rejected the NerdGraph query. Check key permissions and API schema.', retryable ? 60 : undefined, graphqlDiagnostic(response.data.errors));
+      }
+      if (!response.data?.data) throw new NewRelicApiError('New Relic returned no query data.', undefined, 'empty_response');
       return response.data.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
+        const rawStatus = error.response?.status;
+        const status = Number.isInteger(rawStatus) && rawStatus! >= 100 && rawStatus! <= 599 ? rawStatus : undefined;
         const retryable = !status || status === 429 || status >= 500;
-        const retryAfter = error.response?.headers['retry-after'];
+        const retryAfter = error.response?.headers?.['retry-after'];
         const seconds = retryAfter && /^\d+$/.test(String(retryAfter))
           ? Number(retryAfter)
           : Math.ceil((Date.parse(String(retryAfter)) - Date.now()) / 1000);
         // Never propagate Axios errors: they include the API key in config.headers.
         throw new NewRelicApiError(`New Relic request failed (${status ?? 'network error'}).`,
-          retryable ? (Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds, 3600) : 60) : undefined);
+          retryable ? (Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds, 3600) : 60) : undefined,
+          status ? 'http_error' : 'network_error', status);
       }
       throw error;
     }
@@ -177,7 +198,14 @@ export class HttpClient {
         diagnostic = 'read_back_pending';
       } catch { diagnostic = 'read_back_failed'; }
     }
-    throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic ?? diagnostic);
+    if (!receiptDiagnostic) {
+      // A null business error plus an exact ACK/account/issue receipt confirms
+      // the request. An inconclusive follow-up query must not turn that success
+      // into an uncertain write, or imply that query state was independently verified.
+      console.info(`[newrelic-context] acknowledgment:api_confirmed code=${diagnostic}`);
+      return 'acknowledged_by_api';
+    }
+    throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic);
   }
 
   async markIssueInvestigating(accountId: string, issueId: string, createdAt: number): Promise<'investigating' | 'already_investigating' | 'closed'> {
@@ -185,11 +213,14 @@ export class HttpClient {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) throw new NewRelicInvestigationError('invalid_source');
     let before: NewRelicIssue;
     try { before = await this.getIssue(accountId, issueId, createdAt, true); }
-    catch { throw new NewRelicInvestigationError('source_read_failed'); }
+    catch (error) { throw new NewRelicInvestigationError('source_read_failed',
+      error instanceof NewRelicApiError ? error.diagnostic : 'unknown', error instanceof NewRelicApiError ? error.httpStatus : undefined); }
     if (before.state === 'CLOSED') return 'closed';
     if (positiveEpoch(before.investigatedAt)) return 'already_investigating';
     if (!['CREATED', 'ACTIVATED', 'DEACTIVATED'].includes(before.state)) throw new NewRelicInvestigationError('unsupported_state');
     let uncertain = false;
+    let reason: NewRelicRequestDiagnostic | undefined;
+    let httpStatus: number | undefined;
     try {
       // Observed from New Relic's Mark as investigating UI operation. Do not
       // assume a particular action string; verify the exact source afterwards.
@@ -202,9 +233,12 @@ export class HttpClient {
         }`, { accountId: Number(accountId), issueId });
       if (data.aiIssuesMarkAsInvestigating?.error != null) throw new NewRelicInvestigationError('mutation_rejected');
       uncertain = !data.aiIssuesMarkAsInvestigating || data.aiIssuesMarkAsInvestigating.error !== null;
+      if (uncertain) reason = 'unexpected_response';
     } catch (error) {
       if (error instanceof NewRelicInvestigationError) throw error;
       uncertain = true; // Lost response: reconcile with reads, never resend.
+      reason = error instanceof NewRelicApiError ? error.diagnostic : 'unknown';
+      httpStatus = error instanceof NewRelicApiError ? error.httpStatus : undefined;
     }
     for (const delay of [0, 500, 1500]) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -213,7 +247,7 @@ export class HttpClient {
         if (positiveEpoch(after.investigatedAt)) return 'investigating';
       } catch { /* Keep verification bounded and errors credential-free. */ }
     }
-    throw new NewRelicInvestigationError(uncertain ? 'mutation_unconfirmed' : 'read_back_pending');
+    throw new NewRelicInvestigationError(uncertain ? 'mutation_unconfirmed' : 'read_back_pending', reason, httpStatus);
   }
 
   async nrql(accountId: string, query: string): Promise<Record<string, unknown>[]> {
