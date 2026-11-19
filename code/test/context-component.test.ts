@@ -26,6 +26,17 @@ const initializationEvent = () => ({
   payload: { context: { object_id: 'ISS-1' } },
 });
 
+test('manifest input labels meet DevRev’s 50-character display-name limit', () => {
+  const invalid: string[] = [];
+  for (const [scope, inputs] of Object.entries(manifest.inputs)) {
+    for (const input of inputs as { name: string; ui?: { display_name?: string } }[]) {
+      const label = input.ui?.display_name;
+      if (typeof label === 'string' && Array.from(label).length > 50) invalid.push(`${scope}.${input.name}: ${label}`);
+    }
+  }
+  expect(invalid).toEqual([]);
+});
+
 test('the issue component names a declared, registered initializer distinct from its action handler', () => {
   const component = manifest.snap_components.find((entry: { name: string }) => entry.name === 'newrelic_context');
   expect(component.initializer).toBe('initialize_newrelic_context');

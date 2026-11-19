@@ -1,6 +1,6 @@
 # One-click New Relic incident triage (1.5.0)
 
-Version 1.7.0 adds **Mark New Relic issue as investigating after GitHub handoff**,
+Version 1.7.0 adds **Mark as investigating after GitHub handoff**,
 an optional organization setting (off by default). The completed combined callback
 must contain a validated GitHub issue before this update runs. A partial result
 that reached GitHub but stopped at coding also qualifies; an analysis-only partial
