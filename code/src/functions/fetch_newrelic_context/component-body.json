@@ -2,14 +2,14 @@
   "snaps": [
     {
       "type": "card",
-      "title": { "type": "plain_text", "text": "New Relic context" },
+      "title": { "type": "plain_text", "text": "New Relic incident triage" },
       "elements": [
         {
           "type": "content",
           "elements": [
             {
               "type": "plain_text",
-              "text": "Analyze the alert window and latest 30 minutes with the incident analyst. The summary appears in the internal discussion. Evidence buttons post the bounded query results separately."
+              "text": "Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; the brief and verified links appear in the internal discussion."
             }
           ]
         },
@@ -22,8 +22,21 @@
               "action_id": "fetch_newrelic_context",
               "action_type": "remote",
               "style": "primary",
+              "value": "triage",
+              "text": { "type": "plain_text", "text": "Triage and start fix" }
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "direction": "row",
+          "elements": [
+            {
+              "type": "button",
+              "action_id": "fetch_newrelic_context",
+              "action_type": "remote",
               "value": "alert",
-              "text": { "type": "plain_text", "text": "Analyze New Relic context" }
+              "text": { "type": "plain_text", "text": "Analyze incident" }
             },
             {
               "type": "button",

@@ -9,6 +9,7 @@ import { planContext } from '../src/functions/fetch_newrelic_context/context';
 import { HttpClient } from '../src/functions/external-system/http-client';
 import { issuePermalink } from '../src/functions/external-system/links';
 import { githubRepository, githubResult } from '../src/functions/fetch_newrelic_context/github-policy';
+import { triageResult } from '../src/functions/fetch_newrelic_context/triage-policy';
 
 jest.mock('@devrev/typescript-sdk', () => ({ ...jest.requireActual('@devrev/typescript-sdk'), client: { setup: jest.fn(), setupBeta: jest.fn() } }));
 
@@ -195,7 +196,7 @@ test('the manifest connects the response automation, configurable agent and opti
   expect(manifest.service_account.scopes.self).toContainEqual(expect.objectContaining({ scope: 'issue:read', optional: true }));
   expect(manifest.event_sources.organization).toContainEqual(expect.objectContaining({ name: RESPONSE_SOURCE, type: 'devrev-webhook', config: { event_types: ['ai_agent_response'] } }));
   expect(manifest.automations).toContainEqual(expect.objectContaining({ source: RESPONSE_SOURCE, event_types: ['ai_agent_response'], function: 'complete_newrelic_analysis' }));
-  expect(manifest.snap_components[0].snap_kit_body.snaps[0].elements[2].elements.map((button: { value: string }) => button.value)).toEqual(['evidence', 'recent_evidence']);
+  expect(manifest.snap_components[0].snap_kit_body.snaps[0].elements[3].elements.map((button: { value: string }) => button.value)).toEqual(['evidence', 'recent_evidence']);
 });
 
 test.each(['actor denied', 'bot denied', 'agent missing', 'agent wrong org', 'event source missing'])('does not invoke the agent when %s', async (failure) => {
@@ -499,4 +500,104 @@ test('logs the failing record operation and HTTP status without response data or
   await expect(complete([event])).rejects.toThrow('Check the fixed failure code');
   expect(console.error).toHaveBeenCalledWith('[newrelic-context] analysis:failed code=request_record_read_failed status=403');
   expect(JSON.stringify((console.error as jest.Mock).mock.calls)).not.toMatch(/private-nr-key|actor-token|bot-token/);
+});
+
+const triageGitHub = { status: 'existing', url: 'https://github.com/' + repository + '/issues/42', issue_number: 42 };
+const triageCoding = { status: 'assigned', provider: 'copilot', issue_url: triageGitHub.url, issue_number: 42 };
+const combinedReport = { status: 'completed', analysis: 'Bounded incident brief. NRAK-secret bot-token', github: triageGitHub, coding: triageCoding };
+
+test('one combined click gathers both windows and runs the GitHub coordinator as the user without storing tokens', async () => {
+  const input = click('triage');
+  input.input_data.global_values.analysis_agent_id = ''; // Combined mode does not require invoking AG-6.
+  await fetchContext([input]);
+  expect(HttpClient.prototype.nrql).toHaveBeenCalledTimes(6);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  const request = agent.aiAgentEventsExecuteAsync.mock.calls[0][0];
+  expect(request.agent).toBe(githubAgentId);
+  expect(request.client_metadata).toMatchObject({ connector: 'newrelic-triage-v1', triage: { repository, provider: 'copilot' } });
+  expect(client.setupBeta).toHaveBeenCalledWith({ endpoint: 'https://api.devrev.ai', token: 'actor-token' });
+  const prompt = request.event.input_message.message;
+  const evidence = JSON.parse(prompt.split('\n\nEVIDENCE\n')[1]);
+  expect(evidence.windows.map((window: { mode: string }) => window.mode)).toEqual(['alert', 'recent']);
+  expect(prompt).toContain('triage_and_fix');
+  expect(prompt).toContain('Only after the GitHub issue is verified');
+  expect(prompt.length).toBeLessThanOrEqual(16384);
+  expect(JSON.stringify(request)).not.toMatch(/private-nr-key|actor-token|bot-token/);
+  expect(JSON.stringify([...records.values()])).not.toMatch(/private-nr-key|actor-token|bot-token/);
+  expect(comment.body).toContain('triage requested');
+});
+
+test('posts one scrubbed combined result with the incident brief and verified issue/assignment', async () => {
+  await fetchContext([click('triage')]);
+  await complete([response('message', JSON.stringify(combinedReport))]);
+  expect(comment.body).toContain('## New Relic incident triage');
+  expect(comment.body).toContain('GitHub issue #42');
+  expect(comment.body).toContain('GitHub Copilot is assigned');
+  expect(comment.body).toContain('Bounded incident brief.');
+  expect(comment.body).not.toMatch(/NRAK-secret|bot-token/);
+  await complete([response('message', JSON.stringify(combinedReport))]);
+  expect(bot.timelineEntriesUpdate).toHaveBeenCalledTimes(1);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+});
+
+test.each(['github', 'coding'])('preserves completed stages when the combined agent stops at %s', async (stage) => {
+  await fetchContext([click('triage')]);
+  const report = { status: 'partial', stopped_at: stage, analysis: 'Investigation brief.', ...(stage === 'coding' ? { github: triageGitHub } : {}) };
+  await complete([response('message', JSON.stringify(report))]);
+  expect(comment.body).toContain('Investigation brief.');
+  expect(comment.body).toContain(stage === 'github' ? 'No GitHub issue result was validated' : 'Coding assignment was not validated');
+  expect(comment.body).not.toContain('GitHub Copilot is assigned');
+});
+
+test.each(['repository', 'provider', 'agent'])('rejects a combined callback with mismatched %s routing', async (field) => {
+  await fetchContext([click('triage')]);
+  const event = response('message', JSON.stringify(combinedReport));
+  if (field === 'repository') event.payload.ai_agent_response.client_metadata.triage.repository = 'other/repo';
+  if (field === 'provider') event.payload.ai_agent_response.client_metadata.triage.provider = 'other';
+  if (field === 'agent') event.payload.ai_agent_response.agent = agentId;
+  await complete([event]).catch(() => undefined);
+  expect(bot.timelineEntriesUpdate).not.toHaveBeenCalled();
+});
+
+test.each(['repository', 'provider', 'coordinator'])('does not query telemetry or start a combined run with missing/unsupported %s configuration', async (field) => {
+  const input = click('triage');
+  if (field === 'repository') input.input_data.global_values.github_issue_repository = '';
+  if (field === 'coordinator') input.input_data.global_values.github_issue_agent_id = '';
+  if (field === 'provider') Object.assign(input.input_data.global_values, { coding_agent_provider: 'unknown' });
+  await expect(fetchContext([input])).rejects.toThrow();
+  expect(HttpClient.prototype.getIssue).not.toHaveBeenCalled();
+  expect(agent.aiAgentEventsExecuteAsync).not.toHaveBeenCalled();
+});
+
+test('deduplicates a delivered combined click and accepts a callback after an uncertain start', async () => {
+  agent.aiAgentEventsExecuteAsync.mockRejectedValueOnce(new Error('response timeout'));
+  await expect(fetchContext([click('triage')])).rejects.toThrow('Could not start or confirm');
+  await fetchContext([click('triage')]);
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+  await complete([response('message', JSON.stringify(combinedReport))]);
+  expect(comment.body).toContain('GitHub issue #42');
+});
+
+test('individual GitHub issue creation can use a completed combined analysis', async () => {
+  const body = triageResult(JSON.stringify({ status: 'partial', stopped_at: 'github', analysis: 'Latest combined brief.' }), { repository, provider: 'copilot' }, [])!;
+  actor.timelineEntriesList.mockResolvedValueOnce({ data: { timeline_entries: [{ id: issueId + ':comment/triage', object: issueId,
+    type: 'timeline_comment', visibility: 'internal', created_by: { id: serviceAccountId },
+    external_ref: 'newrelic-triage:' + 'c'.repeat(64), body }] } });
+  await fetchContext([click('github')]);
+  const input = JSON.parse(agent.aiAgentEventsExecuteAsync.mock.calls[0][0].event.input_message.message.split('\nINPUT\n')[1]);
+  expect(input.analysis).toContain('Latest combined brief.');
+  expect(input.analysis_comment_id).toBe(issueId + ':comment/triage');
+});
+
+test('coding progress consumes the combined GitHub result while Start reuses the reported assignment', async () => {
+  const body = triageResult(JSON.stringify(combinedReport), { repository, provider: 'copilot' }, [])!;
+  actor.timelineEntriesList.mockResolvedValue({ data: { timeline_entries: [{ id: issueId + ':comment/triage', object: issueId,
+    type: 'timeline_comment', visibility: 'internal', created_by: { id: serviceAccountId },
+    external_ref: 'newrelic-triage:' + 'c'.repeat(64), body }] } });
+  await fetchContext([click('coding')]);
+  expect(agent.aiAgentEventsExecuteAsync).not.toHaveBeenCalled();
+  await fetchContext([click('coding_status')]);
+  const input = JSON.parse(agent.aiAgentEventsExecuteAsync.mock.calls[0][0].event.input_message.message.split('\nINPUT\n')[1]);
+  expect(input).toMatchObject({ operation: 'coding_status', issue_number: 42, issue_url: triageGitHub.url });
+  expect(HttpClient.prototype.nrql).not.toHaveBeenCalled();
 });

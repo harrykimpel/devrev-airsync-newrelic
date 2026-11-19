@@ -43,13 +43,16 @@ test('renders both actions using the snap-kit response envelope without a button
   expect(manifest.snap_kit_actions).toContainEqual(expect.objectContaining({ name: result.snap_kit_body.snap_in_action_name }));
   const body = result.snap_kit_body.body;
   expect(body).toEqual(manifest.snap_components[0].snap_kit_body);
-  const buttons = body.snaps[0].elements[1].elements;
+  expect(body.snaps[0].elements[1].elements).toEqual([
+    expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', style: 'primary', value: 'triage' }),
+  ]);
+  const buttons = body.snaps[0].elements[2].elements;
   expect(buttons.map((button) => 'value' in button ? button.value : undefined)).toEqual(['alert', 'recent']);
   expect(buttons).toEqual([
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'alert' }),
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'recent' }),
   ]);
-  const codingButtons = body.snaps[0].elements[4].elements;
+  const codingButtons = body.snaps[0].elements[5].elements;
   expect(codingButtons).toEqual([
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'coding', text: { type: 'plain_text', text: 'Start coding agent' } }),
     expect.objectContaining({ action_id: 'fetch_newrelic_context', action_type: 'remote', value: 'coding_status', text: { type: 'plain_text', text: 'Check coding progress' } }),

@@ -8,7 +8,7 @@ export const CODING_RESULT_PREFIX = '## Coding agent progress\n\n';
 const providers = {
   copilot: {
     id: 'copilot', label: 'GitHub Copilot',
-    instructions: 'Only in the authorized coding_start assignment branch, use assign_copilot_to_issue with owner, repo and issue_number from INPUT; pass base_ref only when supplied. ' +
+    instructions: 'Only in the explicitly authorized assignment step, use assign_copilot_to_issue with owner, repo and the verified issue_number; pass base_ref only when supplied. ' +
       'In custom_instructions ask Copilot to investigate the reported symptoms, treat analysis causes as hypotheses, implement a focused fix with meaningful tests, follow repository instructions, and create its fix PR for human review. Include the correlation_marker. ' +
       'Copilot creates its own branch and PR. Do not call create_pr or create_pull_request, create an empty PR, write code yourself, or start another agent. ',
   },

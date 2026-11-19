@@ -5,6 +5,10 @@ Copilot's proposed fix PR → Check coding progress**. Each external write is
 requested on demand. The connector does not assign an issue automatically after
 analysis or issue creation.
 
+From 1.5.0, **Triage and start fix** explicitly requests the analysis, issue and
+assignment steps together. See [combined incident triage](TRIAGE.md) for AG-7
+configuration and how it differs from these individual actions.
+
 Copilot creates its branch and PR when assigned the issue. The coordinator must
 not call the separately installed `create_pr`/`create_pull_request` tool: creating
 another PR would duplicate Copilot's work and does not itself implement a fix.

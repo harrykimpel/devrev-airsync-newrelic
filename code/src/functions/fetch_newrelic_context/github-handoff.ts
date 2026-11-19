@@ -5,6 +5,7 @@ import { parseIssueReference } from '../external-system/links';
 import { AnalysisError, analysisReference, configuredAgent, githubRequestPrefix, startAnalysis } from './analysis';
 import { redact } from './context';
 import { githubRepository } from './github-policy';
+import { triageAnalysis } from './triage-policy';
 
 export async function handoffGitHub(options: {
   endpoint: string; actorToken: string; serviceToken: string; serviceAccountId: string;
@@ -31,8 +32,9 @@ export async function handoffGitHub(options: {
   }
   const completed = entries.filter((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id &&
     entry.visibility === 'internal' && entry.created_by?.id === options.serviceAccountId &&
-    /^newrelic-analysis:[a-f0-9]{64}$/.test(entry.external_ref ?? '') &&
-    'body' in entry && typeof entry.body === 'string' && entry.body.startsWith('## New Relic analysis\n\n'))
+    'body' in entry && typeof entry.body === 'string' &&
+    ((/^newrelic-analysis:[a-f0-9]{64}$/.test(entry.external_ref ?? '') && entry.body.startsWith('## New Relic analysis\n\n')) ||
+      (/^newrelic-triage:[a-f0-9]{64}$/.test(entry.external_ref ?? '') && !!triageAnalysis(entry.body))))
     .sort((a, b) => Date.parse(b.modified_date ?? b.created_date ?? '') - Date.parse(a.modified_date ?? a.created_date ?? ''))[0];
   if (!completed || !('body' in completed) || typeof completed.body !== 'string') {
     throw new AnalysisError('analysis_not_ready', 'Run a New Relic analysis and wait for its completed brief before creating a GitHub issue. The latest 100 discussion entries are checked.');
@@ -46,7 +48,7 @@ export async function handoffGitHub(options: {
   const evidence = { operation: 'github_issue', repository, correlation_marker: correlation, devrev_issue_id: options.issue.id,
     issue_title: options.issue.title?.slice(0, 500), analysis_comment_id: completed.id,
     analysis_completed_at: completed.modified_date ?? completed.created_date,
-    source_url: options.sourceUrl, analysis: completed.body.slice(0, 9000) };
+    source_url: options.sourceUrl, analysis: (triageAnalysis(completed.body) ?? completed.body).slice(0, 9000) };
   const prompt = instructions + '\n\nINPUT\n' + JSON.stringify(evidence,
     (_key, value) => typeof value === 'string' ? redact(value, [options.actorToken, options.serviceToken]) : value);
   if (prompt.length > 16384) throw new AnalysisError('github_input_too_large', 'The completed analysis exceeds the agent input limit.');
