@@ -173,7 +173,11 @@ async function handleEvent(input: unknown) {
       baseBranchValue: globals?.coding_agent_base_branch });
   }
   const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
-  const acknowledgment = acknowledgmentOnly || (triage && event.input_data?.global_values?.acknowledge_on_triage === true)
+  const shouldAcknowledge = acknowledgmentOnly || (triage !== undefined && event.input_data?.global_values?.acknowledge_on_triage === true);
+  if (shouldAcknowledge && recordId !== `${source.accountId}:${source.issueId}`) {
+    throw new Error('Acknowledgment requires an imported issue whose AirSync record ID matches its New Relic source. Re-sync the issue.');
+  }
+  const acknowledgment = shouldAcknowledge
     ? await acknowledgeSource({ newrelic, devrev, issueId: work.id, accountId: source.accountId, sourceIssueId: source.issueId,
       createdAt: Date.parse(work.created_date ?? ''), sourceUrl, requestHash }) : undefined;
   if (acknowledgmentOnly) {
