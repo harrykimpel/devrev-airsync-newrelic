@@ -9,8 +9,12 @@ export class NewRelicApiError extends Error {
   }
 }
 
+export type AcknowledgmentDiagnostic = 'unspecified' | 'invalid_source_id' | 'source_read_failed' | 'source_state_unsupported' |
+  'mutation_request_failed' | 'mutation_rejected' | 'receipt_missing' | 'receipt_error_missing' |
+  'receipt_action_mismatch' | 'receipt_account_mismatch' | 'receipt_issue_mismatch' | 'read_back_failed' | 'read_back_pending';
+
 export class NewRelicAcknowledgmentError extends Error {
-  constructor(readonly code: 'rejected' | 'unconfirmed') {
+  constructor(readonly code: 'rejected' | 'unconfirmed', readonly diagnostic: AcknowledgmentDiagnostic = 'unspecified') {
     super(code === 'rejected'
       ? 'New Relic rejected the acknowledgment. Check that the connection owner can manage alert issues.'
       : 'The acknowledgment could not be confirmed. Check the source issue before retrying; the request may have taken effect.');
@@ -103,14 +107,23 @@ export class HttpClient {
     // Mutations accept only the UUID used by Alert Intelligence, not an arbitrary
     // external identifier or any ID supplied by an agent response.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) {
-      throw new NewRelicAcknowledgmentError('rejected');
+      throw new NewRelicAcknowledgmentError('rejected', 'invalid_source_id');
     }
-    const acknowledged = (issue: NewRelicIssue) => Number.isSafeInteger(issue.acknowledgedAt) && issue.acknowledgedAt! > 0;
-    const before = await this.getIssue(accountId, issueId, createdAt);
+    const acknowledged = (issue: NewRelicIssue) => {
+      // EpochMilliseconds is a custom scalar. Accept numeric JSON values and
+      // canonical decimal strings, without coercing booleans, dates or objects.
+      const raw = issue.acknowledgedAt;
+      const timestamp = typeof raw === 'string' && /^[1-9]\d{0,15}$/.test(raw) ? Number(raw) : raw;
+      return typeof timestamp === 'number' && Number.isSafeInteger(timestamp) && timestamp > 0;
+    };
+    let before: NewRelicIssue;
+    try { before = await this.getIssue(accountId, issueId, createdAt); }
+    catch { throw new NewRelicAcknowledgmentError('unconfirmed', 'source_read_failed'); }
     if (before.state === 'CLOSED') return 'closed';
     if (acknowledged(before)) return 'already_acknowledged';
-    if (!['CREATED', 'ACTIVATED', 'DEACTIVATED'].includes(before.state)) throw new NewRelicAcknowledgmentError('rejected');
-    let data: { aiIssuesAckIssue?: { error?: unknown; result?: { action?: string; accountId?: number; issueId?: string } } };
+    if (!['CREATED', 'ACTIVATED', 'DEACTIVATED'].includes(before.state)) throw new NewRelicAcknowledgmentError('rejected', 'source_state_unsupported');
+    let data: { aiIssuesAckIssue?: { error?: unknown; result?: { action?: string; accountId?: number; issueId?: string } } } | undefined;
+    let receiptDiagnostic: AcknowledgmentDiagnostic | undefined;
     try {
       data = await this.query(`
         mutation($accountId: Int!) {
@@ -120,21 +133,36 @@ export class HttpClient {
           }
         }`, { accountId: Number(accountId) });
     } catch {
-      // A lost response is ambiguous. Never repeat the mutation automatically,
-      // or expose the raw response (which can include credentials).
-      throw new NewRelicAcknowledgmentError('unconfirmed');
+      // A lost response is ambiguous. Reconcile the exact source with reads,
+      // never by repeating the mutation or exposing a raw response.
+      receiptDiagnostic = 'mutation_request_failed';
     }
-    const mutation = data.aiIssuesAckIssue;
-    if (mutation?.error !== null && mutation?.error !== undefined) throw new NewRelicAcknowledgmentError('rejected');
-    if (mutation?.error !== null || mutation.result?.action !== 'ACK' ||
-      mutation.result.accountId !== Number(accountId) || mutation.result.issueId !== issueId) {
-      throw new NewRelicAcknowledgmentError('unconfirmed');
+    const mutation = data?.aiIssuesAckIssue;
+    if (mutation?.error !== null && mutation?.error !== undefined) throw new NewRelicAcknowledgmentError('rejected', 'mutation_rejected');
+    if (!receiptDiagnostic) {
+      if (!mutation?.result) receiptDiagnostic = 'receipt_missing';
+      else if (mutation.error !== null) receiptDiagnostic = 'receipt_error_missing';
+      else if (mutation.result.action !== 'ACK') receiptDiagnostic = 'receipt_action_mismatch';
+      else if (mutation.result.accountId !== Number(accountId)) receiptDiagnostic = 'receipt_account_mismatch';
+      else if (mutation.result.issueId !== issueId) receiptDiagnostic = 'receipt_issue_mismatch';
     }
-    try {
-      const after = await this.getIssue(accountId, issueId, createdAt);
-      if (acknowledged(after)) return 'acknowledged';
-    } catch { /* The mutation may have succeeded; leave read-back uncertainty visible. */ }
-    throw new NewRelicAcknowledgmentError('unconfirmed');
+    let diagnostic: AcknowledgmentDiagnostic = 'read_back_pending';
+    // The mutation and the issue-query index need not become visible together.
+    // Retry only these reads, never the mutation, and bound both attempts and delay.
+    for (const delay of [0, 500, 1500]) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const after = await this.getIssue(accountId, issueId, createdAt);
+        if (acknowledged(after)) {
+          // Report the verified source state, not success inferred from an
+          // uncertain/mismatched receipt. getIssue checks the requested UUID.
+          if (receiptDiagnostic) console.info(`[newrelic-context] acknowledgment:reconciled code=${receiptDiagnostic}`);
+          return 'acknowledged';
+        }
+        diagnostic = 'read_back_pending';
+      } catch { diagnostic = 'read_back_failed'; }
+    }
+    throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic ?? diagnostic);
   }
 
   async nrql(accountId: string, query: string): Promise<Record<string, unknown>[]> {

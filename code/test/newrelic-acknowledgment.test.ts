@@ -16,6 +16,7 @@ const workId = 'don:core:dvrv-us-1:devo/test:issue/1';
 const createdAt = now - 3600000;
 const sourceIssue = { issueId: sourceId, title: ['Errors'], state: 'ACTIVATED', priority: 'CRITICAL', createdAt, updatedAt: now };
 const post = jest.fn();
+const nativeSetTimeout = global.setTimeout;
 const worksGet = jest.fn();
 const timelineEntriesCreate = jest.fn();
 const timelineEntriesList = jest.fn();
@@ -40,6 +41,8 @@ beforeEach(() => {
   jest.spyOn(Date, 'now').mockReturnValue(now);
   jest.spyOn(console, 'info').mockImplementation(() => undefined);
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  // Exercise the real retry loop without spending wall time on backoff.
+  jest.spyOn(global, 'setTimeout').mockImplementation((callback) => nativeSetTimeout(callback, 0));
   (axios.create as jest.Mock).mockReturnValue({ post });
   (axios.isAxiosError as unknown as jest.Mock).mockImplementation((error) => error?.isAxiosError === true);
   (client.setup as jest.Mock).mockReturnValue({ worksGet, timelineEntriesCreate, timelineEntriesList });
@@ -94,34 +97,106 @@ test.each(['private-nr-key actor-token', { reason: 'private-nr-key' }, '', false
 });
 
 test.each([
-  { result: { action: 'RESOLVE', accountId: 123, issueId: sourceId } },
-  { result: { action: 'ACK', accountId: 999, issueId: sourceId } },
-  { result: { action: 'ACK', accountId: 123, issueId: 'other' } },
-  { result: null }, { error: undefined },
-])('requires an exact mutation receipt (%j)', async (fields) => {
-  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation(fields));
-  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed' });
-  expect(post).toHaveBeenCalledTimes(2);
+  [{ result: { action: 'RESOLVE', accountId: 123, issueId: sourceId } }, 'receipt_action_mismatch'],
+  [{ result: { action: 'ACK', accountId: 999, issueId: sourceId } }, 'receipt_account_mismatch'],
+  [{ result: { action: 'ACK', accountId: 123, issueId: 'other' } }, 'receipt_issue_mismatch'],
+  [{ result: null }, 'receipt_missing'], [{ error: undefined }, 'receipt_error_missing'],
+])('does not trust an inexact mutation receipt without source confirmation (%j)', async (fields, diagnostic) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation(fields)).mockResolvedValue(read({ acknowledgedAt: null }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic });
+  expect(post).toHaveBeenCalledTimes(5);
 });
 
-test.each([null, 0, -1, '2026-11-19', undefined])('requires a positive acknowledgment timestamp on read-back (%j)', async (acknowledgedAt) => {
-  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValueOnce(read({ acknowledgedAt }));
-  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed' });
-  expect(post).toHaveBeenCalledTimes(3);
+test.each([null, 0, -1, '2026-11-19', undefined, true, {}, [], '9007199254740993', ' 1795089600000', '1e12'])('requires a positive acknowledgment timestamp on read-back (%j)', async (acknowledgedAt) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValue(read({ acknowledgedAt }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'read_back_pending' });
+  expect(post).toHaveBeenCalledTimes(5);
 });
 
-test('leaves a lost mutation response unconfirmed and checks the source on the next delivery', async () => {
+test('reconciles a lost mutation response from the exact source without repeating the mutation', async () => {
   post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce({ isAxiosError: true,
     config: { headers: { 'API-Key': 'private-nr-key' } } }).mockResolvedValueOnce(read({ acknowledgedAt: now }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe('acknowledged');
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:reconciled code=mutation_request_failed');
+});
+
+test('can confirm a write from source state when the mutation receipt is unexpected', async () => {
+  post.mockReset().mockResolvedValueOnce(read())
+    .mockResolvedValueOnce(mutation({ result: { action: 'UNKNOWN', accountId: 999, issueId: 'other' } }))
+    .mockResolvedValueOnce(read({ acknowledgedAt: now }));
+  await expect(run([click()])).resolves.toMatchObject({ acknowledgment_status: 'acknowledged' });
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
+  expect(post.mock.calls[2][1].query).toContain('ids: ["' + sourceId + '"]');
+  expect(post.mock.calls[2][1].variables.accountId).toBe(123);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:reconciled code=receipt_action_mismatch');
+  expect(timelineEntriesCreate.mock.calls[0][0].body).toContain('acknowledgment was verified');
+});
+
+test('an uncertain mutation remains unconfirmed if only a different source issue is acknowledged', async () => {
+  const wrong = read({ issueId: 'different-source', acknowledgedAt: now });
+  post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce(new Error('private-nr-key')).mockResolvedValue(wrong);
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'mutation_request_failed' });
+  expect(post).toHaveBeenCalledTimes(5);
+});
+
+test('a later delivery reads the source first when a previous write and all its checks were uncertain', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce(new Error('private-nr-key'))
+    .mockResolvedValueOnce(read()).mockResolvedValueOnce(read()).mockResolvedValueOnce(read())
+    .mockResolvedValueOnce(read({ acknowledgedAt: now }));
   const http = api();
-  await expect(http.acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed' });
+  await expect(http.acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'mutation_request_failed' });
   await expect(http.acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe('already_acknowledged');
   expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
 });
 
 test('requires read-back even after a valid mutation response', async () => {
-  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockRejectedValueOnce(new Error('private-nr-key'));
-  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed' });
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockRejectedValue(new Error('private-nr-key'));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'unconfirmed', diagnostic: 'read_back_failed' });
+});
+
+test('verifies a delayed acknowledgment with bounded read retries and a single mutation', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation())
+    .mockResolvedValueOnce(read({ acknowledgedAt: null })).mockResolvedValueOnce(read({ acknowledgedAt: null }))
+    .mockResolvedValueOnce(read({ acknowledgedAt: now }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe('acknowledged');
+  expect(post).toHaveBeenCalledTimes(5);
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation('))).toHaveLength(1);
+  expect((global.setTimeout as unknown as jest.Mock).mock.calls.map((call) => call[1])).toEqual([500, 1500]);
+});
+
+test('can verify after a transient read-back request failure', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation())
+    .mockRejectedValueOnce({ isAxiosError: true, config: { headers: { 'API-Key': 'private-nr-key' } } })
+    .mockResolvedValueOnce(read({ acknowledgedAt: now }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe('acknowledged');
+  expect(post).toHaveBeenCalledTimes(4);
+});
+
+test.each(['before', 'after'])('accepts a canonical decimal epoch string %s the mutation without unsafe coercion', async (when) => {
+  post.mockReset();
+  if (when === 'before') post.mockResolvedValue(read({ acknowledgedAt: String(now) }));
+  else post.mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValue(read({ acknowledgedAt: String(now) }));
+  await expect(api().acknowledgeIssue('123', sourceId, createdAt)).resolves.toBe(when === 'before' ? 'already_acknowledged' : 'acknowledged');
+  expect(post).toHaveBeenCalledTimes(when === 'before' ? 1 : 3);
+});
+
+test('does not conflate an unreadable source before writing with an uncertain mutation', async () => {
+  post.mockReset().mockRejectedValue(new Error('private-nr-key'));
+  await expect(run([click()])).resolves.toMatchObject({ acknowledgment_status: 'unconfirmed', detail: expect.stringContaining('No acknowledgment was sent') });
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:diagnostic code=source_read_failed');
+  expect(timelineEntriesCreate.mock.calls[0][0].body).toContain('Diagnostic: source_read_failed');
+  expect(JSON.stringify(timelineEntriesCreate.mock.calls)).not.toContain('private-nr-key');
+});
+
+test('explains pending read-back without implying the accepted mutation was rejected', async () => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce(mutation()).mockResolvedValue(read({ acknowledgedAt: null }));
+  await expect(run([click()])).resolves.toMatchObject({ acknowledgment_status: 'unconfirmed', detail: expect.stringContaining('New Relic accepted the acknowledgment') });
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] acknowledgment:diagnostic code=read_back_pending');
+  const body = timelineEntriesCreate.mock.calls[0][0].body;
+  expect(body).toContain('Diagnostic: read_back_pending');
+  expect(body).not.toContain('connection permissions');
 });
 
 test.each(['US', 'EU'] as const)('standalone action authorizes the selected issue and posts its verified %s result without an agent', async (region) => {

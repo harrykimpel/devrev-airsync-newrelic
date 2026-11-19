@@ -115,6 +115,10 @@ Open an imported issue and find the **New Relic incident triage** component:
   failures do not stop the combined workflow. See the
   [acknowledgment setup and verification guide](docs/NEW_RELIC_ACKNOWLEDGMENT.md).
 
+Version 1.6.1 improves acknowledgment confirmation with bounded read-only retries
+and diagnostic codes for source lookup, mutation receipt and read-back failures.
+It reconciles uncertain mutation responses against the exact source issue and
+accepts safely encoded decimal-string acknowledgment timestamps.
 Version 1.6.0 adds acknowledgment through NerdGraph. The connection owner needs
 permission to manage alert issues in addition to query access. No New Relic MCP
 or Advanced Compute analysis tools are used. The action does not resolve alerts,
