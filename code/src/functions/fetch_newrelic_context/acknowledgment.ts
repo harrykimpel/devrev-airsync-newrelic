@@ -1,7 +1,7 @@
 import { client, publicSDK } from '@devrev/typescript-sdk';
 import axios from 'axios';
 
-import { AcknowledgmentStatus, HttpClient, NewRelicAcknowledgmentError } from '../external-system/http-client';
+import { AcknowledgmentDiagnostic, AcknowledgmentStatus, HttpClient, NewRelicAcknowledgmentError } from '../external-system/http-client';
 
 type Outcome = AcknowledgmentStatus | 'rejected' | 'unconfirmed';
 const descriptions: Record<Outcome, string> = {
@@ -18,14 +18,24 @@ export async function acknowledgeSource(options: {
   accountId: string; sourceIssueId: string; createdAt: number; sourceUrl: string; requestHash: string;
 }) {
   let outcome: Outcome;
+  let diagnostic: AcknowledgmentDiagnostic | undefined;
   try {
     outcome = await options.newrelic.acknowledgeIssue(options.accountId, options.sourceIssueId, options.createdAt);
   } catch (error) {
     // Responses and SDK errors must never become comment text or log messages.
     outcome = error instanceof NewRelicAcknowledgmentError ? error.code : 'unconfirmed';
+    diagnostic = error instanceof NewRelicAcknowledgmentError ? error.diagnostic : 'unspecified';
   }
   console.info(`[newrelic-context] acknowledgment:${outcome}`);
-  const detail = descriptions[outcome];
+  if (diagnostic) console.info(`[newrelic-context] acknowledgment:diagnostic code=${diagnostic}`);
+  const explanation = diagnostic === 'source_read_failed'
+    ? 'The source issue could not be read. No acknowledgment was sent; check source account access, retention and the imported creation date.'
+    : diagnostic === 'read_back_pending'
+    ? 'New Relic accepted the acknowledgment, but its issue query has not yet shown the acknowledgment timestamp after three checks. The issue may already appear acknowledged in New Relic.'
+    : diagnostic === 'read_back_failed'
+    ? 'New Relic accepted the acknowledgment, but the subsequent issue queries failed. Check the source issue before retrying.'
+    : descriptions[outcome];
+  const detail = explanation + (diagnostic ? ` Diagnostic: ${diagnostic}.` : '');
   const externalRef = `newrelic-acknowledgment:${options.requestHash}`;
   let reported = false;
   try {
