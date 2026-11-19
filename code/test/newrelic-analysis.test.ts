@@ -845,3 +845,21 @@ test('an API-confirmed acknowledgment with inconclusive read-back remains a succ
   expect(body).not.toContain('could not be confirmed');
   expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
 });
+
+test.each([
+  ['operation_unavailable', undefined, 'did not expose the Mark as investigating operation'],
+  ['validation_error', undefined, 'rejected the query against its API schema'],
+  ['access_denied', undefined, 'denied API access'],
+  ['http_error', 403, 'denied API access'],
+] as const)('reports safe investigation guidance for %s while preserving the GitHub result', async (reason, status, text) => {
+  jest.spyOn(HttpClient.prototype, 'markIssueInvestigating').mockRejectedValue(new NewRelicInvestigationError('mutation_unconfirmed', reason, status));
+  await fetchContext([investigationClick()]);
+  await complete([investigationResponse()]);
+  expect(comment.body).toContain('GitHub issue #42');
+  const body = [...investigationReports.values()][0].body;
+  expect(body).toContain(text);
+  expect(body).toContain('mutation_unconfirmed/' + reason);
+  if (status) expect(body).toContain('HTTP ' + status);
+  expect(body).not.toMatch(/private-nr-key|actor-token|bot-token/);
+  expect(console.info).toHaveBeenCalledWith('[newrelic-context] investigation:unconfirmed code=mutation_unconfirmed reason=' + reason + (status ? ' status=' + status : ''));
+});

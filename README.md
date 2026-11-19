@@ -138,6 +138,9 @@ Version 1.7.3 reports an exact, error-free New Relic `ACK` response as
 API-confirmed acknowledgment even if the follow-up issue query is inconclusive.
 The comment distinguishes request confirmation from independently verified source
 state. Missing/mismatched receipts still require source confirmation.
+The same release adds safe investigation failure reasons for GraphQL availability,
+validation, access, HTTP/network and response-envelope failures, while preserving
+the GitHub result. Those diagnostics do not establish that investigation succeeded.
 
 Version 1.6.1 improves acknowledgment confirmation with bounded read-only retries
 and diagnostic codes for source lookup, mutation receipt and read-back failures.

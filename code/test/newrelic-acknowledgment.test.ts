@@ -319,3 +319,53 @@ test('bounds investigation confirmation when an empty response does not lead to 
   await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'mutation_unconfirmed' });
   expect(post).toHaveBeenCalledTimes(5);
 });
+
+test.each([
+  [{ message: 'Cannot query field "aiIssuesMarkAsInvestigating" on type "RootMutationType". private-nr-key' }, 'operation_unavailable'],
+  [{ message: 'Variable "$issueId" of type "ID!" used in position expecting type "String!". private-nr-key' }, 'validation_error'],
+  [{ extensions: { errorClass: 'ACCESS_DENIED' }, message: 'private-nr-key' }, 'access_denied'],
+  [{ extensions: { errorClass: 'GRAPHQL_VALIDATION_FAILED' }, message: 'private-nr-key' }, 'validation_error'],
+  [{ extensions: { errorClass: 'THROTTLED' }, message: 'private-nr-key' }, 'throttled'],
+  [{ extensions: { errorClass: 'private-nr-key' }, message: 'private-nr-key' }, 'graphql_error'],
+])('retains only safe investigation diagnostics from GraphQL errors (%j)', async (error, reason) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockResolvedValueOnce({ data: { errors: [error] } }).mockResolvedValue(read());
+  const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+  expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason });
+  expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  expect(post.mock.calls.filter((call) => call[1].query.includes('mutation '))).toHaveLength(1);
+});
+
+test.each([400, 401, 403, 429, 503])('retains HTTP %s without credentials when an investigation mutation fails', async (status) => {
+  post.mockReset().mockResolvedValueOnce(read()).mockRejectedValueOnce({ isAxiosError: true,
+    response: { status, data: 'private-nr-key' }, config: { headers: { 'API-Key': 'private-nr-key' } },
+  }).mockResolvedValue(read());
+  const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+  expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason: 'http_error', httpStatus: status });
+  expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  expect(post).toHaveBeenCalledTimes(5);
+});
+
+test('distinguishes network errors, empty responses and unexpected response envelopes', async () => {
+  const cases = [
+    { response: { isAxiosError: true, config: { headers: { 'API-Key': 'private-nr-key' } } }, reason: 'network_error', rejected: true },
+    { response: { data: {} }, reason: 'empty_response' },
+    { response: { data: { data: {} } }, reason: 'unexpected_response' },
+    { response: { data: { data: {}, errors: 'private-nr-key' } }, reason: 'unexpected_response' },
+    { response: { data: { data: {}, errors: [null] } }, reason: 'unexpected_response' },
+  ];
+  for (const scenario of cases) {
+    post.mockReset().mockResolvedValueOnce(read());
+    if (scenario.rejected) post.mockRejectedValueOnce(scenario.response);
+    else post.mockResolvedValueOnce(scenario.response);
+    post.mockResolvedValue(read());
+    const failure = await api().markIssueInvestigating('123', sourceId, createdAt).catch((error) => error);
+    expect(failure).toMatchObject({ code: 'mutation_unconfirmed', reason: scenario.reason });
+    expect(String(failure) + JSON.stringify(failure)).not.toContain('private-nr-key');
+  }
+});
+
+test('retains the source-read failure reason without sending an investigation mutation', async () => {
+  post.mockReset().mockResolvedValue({ data: { errors: [{ extensions: { errorClass: 'ACCESS_DENIED' }, message: 'private-nr-key' }] } });
+  await expect(api().markIssueInvestigating('123', sourceId, createdAt)).rejects.toMatchObject({ code: 'source_read_failed', reason: 'access_denied' });
+  expect(post).toHaveBeenCalledTimes(1);
+});

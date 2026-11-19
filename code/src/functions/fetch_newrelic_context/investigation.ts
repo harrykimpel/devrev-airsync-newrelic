@@ -55,9 +55,19 @@ async function perform(options: RequestContext & { endpoint: string; token: stri
     return prefix + statuses[outcome];
   } catch (error) {
     const code = error instanceof NewRelicInvestigationError ? error.code : stage;
-    console.info(`[newrelic-context] investigation:unconfirmed code=${code}`);
+    const reason = error instanceof NewRelicInvestigationError ? error.reason : undefined;
+    const status = error instanceof NewRelicInvestigationError ? error.httpStatus : undefined;
+    const diagnostic = code + (reason ? '/' + reason : '') + (status ? ` (HTTP ${status})` : '');
+    console.info(`[newrelic-context] investigation:unconfirmed code=${code}${reason ? ` reason=${reason}` : ''}${status ? ` status=${status}` : ''}`);
+    const guidance = reason === 'operation_unavailable'
+      ? 'New Relic did not expose the Mark as investigating operation to this API request. The browser UI operation may not be available through the configured API connection.'
+      : reason === 'access_denied' || status === 401 || status === 403
+      ? 'New Relic denied API access for this request. Check the initiating connection owner’s account access and alert-management permissions.'
+      : reason === 'validation_error'
+      ? 'New Relic rejected the query against its API schema. Check the investigation operation and argument types.'
+      : 'Check the source issue and the initiating user’s New Relic connection before retrying; the update may have taken effect.';
     return prefix + 'The GitHub issue result is available, but the New Relic investigation update could not be confirmed. ' +
-      'Check the source issue and the initiating user’s New Relic connection before retrying; the update may have taken effect. Diagnostic: ' + code + '.';
+      guidance + ' Diagnostic: ' + diagnostic + '.';
   }
 }
 

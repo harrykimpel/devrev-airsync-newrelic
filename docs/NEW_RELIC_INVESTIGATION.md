@@ -107,6 +107,37 @@ codes. They do not include credentials, actor IDs or raw API payloads. API tests
 use mocked responses; the captured UI mutation must be verified against your
 account rather than treated as a guaranteed public API contract.
 
+Version 1.7.3 also preserves a safe failure reason and HTTP status when the
+investigation mutation or its initial source read fails. For example:
+
+- `mutation_unconfirmed/operation_unavailable`: NerdGraph reported that the
+  investigation field was not available to this request. A working browser UI
+  action does not by itself establish availability through the user-key API.
+- `mutation_unconfirmed/validation_error`: NerdGraph rejected the query schema
+  or argument types.
+- `mutation_unconfirmed/access_denied`: NerdGraph denied API access.
+- `mutation_unconfirmed/http_error (HTTP 403)`: the HTTP endpoint denied the request.
+- `mutation_unconfirmed/network_error`: no confirmed HTTP response was received.
+- `mutation_unconfirmed/unexpected_response`: the response envelope did not
+  establish a valid mutation result.
+
+These reasons are classified locally from a fixed allowlist. Original error
+messages, response data and headers are never stored in the comment or logs.
+They identify the failure category; the original `mutation_unconfirmed` by
+itself does not identify a root cause or prove that a mutation was accepted.
+The investigation action remains unconfirmed unless a source read verifies it.
+This change does not claim to fix an unavailable or rejected mutation.
+
+To diagnose the cause without redeployment, run the captured mutation in
+New Relic's NerdGraph API Explorer using the same user API key and the current
+alert UUID. Share only its GraphQL `errors` or mutation `error`, never the key or
+request headers. Do not use a closed or unrelated alert as a substitute target.
+This is an intentional investigation update if the operation succeeds.
+
+Older saved outcomes and their comments keep their original diagnostic. A
+duplicate callback reuses that outcome; it does not run the mutation again just
+to collect a newer diagnostic.
+
 ## Upgrade and verify
 
 After merging, pull and upgrade the existing installation from `code/`:
