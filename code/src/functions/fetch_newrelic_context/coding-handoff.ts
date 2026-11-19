@@ -6,6 +6,7 @@ import { AnalysisError, analysisReference, configuredAgent, startAnalysis } from
 import { codingProvider } from './coding-policy';
 import { redact } from './context';
 import { githubRepository, githubUrl, GITHUB_RESULT_PREFIX } from './github-policy';
+import { triageCodingStarted, triageGitHubBody } from './triage-policy';
 
 export async function handoffCoding(options: {
   endpoint: string; actorToken: string; serviceToken: string; serviceAccountId: string;
@@ -32,15 +33,19 @@ export async function handoffCoding(options: {
   // link, a pending handoff, or a PR accidentally presented as an issue.
   const completed = entries.filter((entry) => entry.type === 'timeline_comment' && entry.object === options.issue.id &&
     entry.visibility === 'internal' && entry.created_by?.id === options.serviceAccountId &&
-    /^newrelic-github:[a-f0-9]{64}(?::[a-f0-9]{64})?$/.test(entry.external_ref ?? '') &&
-    'body' in entry && typeof entry.body === 'string' && entry.body.startsWith(GITHUB_RESULT_PREFIX))
+    'body' in entry && typeof entry.body === 'string' &&
+    ((/^newrelic-github:[a-f0-9]{64}(?::[a-f0-9]{64})?$/.test(entry.external_ref ?? '') && entry.body.startsWith(GITHUB_RESULT_PREFIX)) ||
+      (/^newrelic-triage:[a-f0-9]{64}$/.test(entry.external_ref ?? '') && !!triageGitHubBody(entry.body))))
     .sort((a, b) => Date.parse(b.modified_date ?? b.created_date ?? '') - Date.parse(a.modified_date ?? a.created_date ?? ''))[0];
   const match = completed && 'body' in completed && typeof completed.body === 'string'
-    ? /^Agent reported: (?:created|found existing) \[GitHub issue #([1-9]\d*)\]\(<([^>\r\n]+)>\)\.(?:\n|$)/.exec(completed.body.slice(GITHUB_RESULT_PREFIX.length)) : undefined;
+    ? /^Agent reported: (?:created|found existing) \[GitHub issue #([1-9]\d*)\]\(<([^>\r\n]+)>\)\.(?:\n|$)/.exec((triageGitHubBody(completed.body) ?? completed.body).slice(GITHUB_RESULT_PREFIX.length)) : undefined;
   const issueNumber = match ? Number(match[1]) : undefined;
   const issueUrl = match ? githubUrl(match[2], repository, 'issues', issueNumber) : undefined;
   if (!completed || !issueUrl || !issueNumber) {
     throw new AnalysisError('github_issue_not_ready', 'Create or locate the GitHub issue first and wait for its completed result. The latest 100 internal discussion entries are checked.');
+  }
+  if (options.operation === 'start' && 'body' in completed && typeof completed.body === 'string' && triageCodingStarted(completed.body)) {
+    return { status: 'success', detail: 'The combined triage already reported an assignment or PR. Use Check coding progress for a fresh read.' };
   }
   const source = parseIssueReference(options.sourceUrl);
   const correlation = 'newrelic-incident:' + createHash('sha256').update(`${source.accountId}:${source.issueId}`).digest('hex');

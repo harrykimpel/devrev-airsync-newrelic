@@ -84,11 +84,15 @@ See [branding configuration](docs/BRANDING.md) for the marketplace icon workflow
 and the limits of changing the icon on a direct CLI installation. Adding an image
 to the repository or redeploying alone does not change DevRev's displayed icon.
 
-## Fetch New Relic context on an issue
+## New Relic incident triage on an issue
 
-Open an imported issue and find the **New Relic context** component:
+Open an imported issue and find the **New Relic incident triage** component:
 
-- **Analyze New Relic context** compares the alert window (creation ±15 minutes,
+- **Triage and start fix** analyzes both telemetry windows, creates or reuses the
+  GitHub issue, and assigns Copilot in one user-authorized GitHub-agent session.
+  The combined brief and validated links appear in the internal discussion.
+  [Republish AG-7 with the combined instructions before use](docs/TRIAGE.md).
+- **Analyze incident** compares the alert window (creation ±15 minutes,
   clipped to now) with the latest 30 minutes and asks the configured DevRev agent
   for an incident brief focused on the alert.
 - **Analyze latest 30 minutes** collects the same two windows, focusing the
@@ -103,6 +107,16 @@ Open an imported issue and find the **New Relic context** component:
   internal discussion; an assignment alone is not reported as a completed fix.
 - **Check coding progress** asks the agent to read the assignment and linked PR
   state. It posts the PR link when available and never starts another coding run.
+
+Version 1.5.0 adds the combined action and the incident-triage wording. The
+individual analysis buttons still invoke the Incident Analyst; the combined mode
+has AG-7 analyze the same bounded evidence with the same instructions before it
+uses its GitHub tools. This avoids storing a user session token between agent
+callbacks. It reuses GitHub issue agent ID, repository/provider/base-branch inputs,
+existing connections and permissions. Coding agent ID is used by the individual
+coding actions; AG-7 needs its own assignment/PR read capabilities for combined
+mode. Structured partial results retain the brief and any verified issue link.
+Actual MCP step order and reuse behavior require verification in the agent trace.
 
 For version 1.4.0, follow the [coding agent setup and upgrade guide](docs/CODING_AGENT.md).
 The coding actions reuse the **GitHub issue agent ID** by default (AG-7 in the

@@ -395,7 +395,7 @@ test('manifest routes real issue buttons to the exported handler with user crede
   expect(manifest.keyrings.user[0]).toMatchObject({ name: 'newrelic_context', types: ['newrelic-user-key'] });
   expect(manifest.snap_kit_actions[0]).toMatchObject({ name: 'fetch_newrelic_context', function: 'fetch_newrelic_context' });
   expect(manifest.snap_components[0]).toMatchObject({ surface: 'issue', snap_kit_action_name: 'fetch_newrelic_context' });
-  const buttons = manifest.snap_components[0].snap_kit_body.snaps[0].elements[1].elements;
+  const buttons = manifest.snap_components[0].snap_kit_body.snaps[0].elements[2].elements;
   expect(buttons.map((b: { value: string }) => b.value)).toEqual(['alert', 'recent']);
   expect(buttons.every((b: { action_id: string }) => b.action_id === 'fetch_newrelic_context')).toBe(true);
   expect(manifest.service_account.scopes.impersonate[0]).toEqual({ act_as: 'all_devusers', scopes: [

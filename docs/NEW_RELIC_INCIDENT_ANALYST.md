@@ -2,7 +2,7 @@
 
 This internal DevRev agent turns the connector's bounded New Relic telemetry
 into an incident brief in the issue's internal discussion. Both analysis buttons
-provide the alert window and the latest 30 minutes. **Analyze New Relic context**
+provide the alert window and the latest 30 minutes. **Analyze incident**
 focuses on the alert; **Analyze latest 30 minutes** focuses on current conditions.
 
 ## Create and publish the agent
@@ -196,7 +196,7 @@ npm run upgrade -- '<current-snap-in-version-DON>'
 ## Verify the complete flow
 
 1. Refresh DevRev and open an issue imported from New Relic.
-2. Open **New Relic context** and click either analysis button.
+2. Open **New Relic incident triage** and click either analysis button.
 3. An internal **New Relic analysis requested** comment should appear.
 4. When the agent completes, that same comment is replaced with its brief and
    source alert link. The result is labeled AI-generated.

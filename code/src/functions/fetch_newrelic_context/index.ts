@@ -9,6 +9,7 @@ import { AnalysisError, analysisPrompt, configuredAgent, RESPONSE_SOURCE, Snapsh
 import { planContext, QueryResult, renderContext, traceSpansQuery } from './context';
 import { handoffGitHub } from './github-handoff';
 import { handoffCoding } from './coding-handoff';
+import { triageConfiguration, triagePrompt } from './triage-handoff';
 
 interface ContextEvent {
   payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
@@ -53,15 +54,15 @@ function validateEvent(input: unknown): ContextEvent {
   const objectId = event?.payload?.context?.object_id;
   const parentId = event?.payload?.context?.parent_core_object_id;
   const issueId = nonEmpty(objectId) ? objectId : parentId;
-  if (!nonEmpty(issueId)) throw new ContextActionError('missing_issue', 'Run Fetch New Relic context from a DevRev issue.');
+  if (!nonEmpty(issueId)) throw new ContextActionError('missing_issue', 'Run this action from a DevRev issue using New Relic incident triage.');
   if (nonEmpty(objectId) && nonEmpty(parentId) && objectId !== parentId) {
     throw new ContextActionError('conflicting_issue', 'The action contains conflicting issue IDs. Refresh the issue and retry.');
   }
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
-  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding', 'coding_status'].includes(event.payload.action.value)) {
-    throw new ContextActionError('invalid_action', 'Run Fetch New Relic context from a DevRev issue while signed in.');
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding', 'coding_status', 'triage'].includes(event.payload.action.value)) {
+    throw new ContextActionError('invalid_action', 'Run this action from New Relic incident triage on a DevRev issue while signed in.');
   }
   return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
 }
@@ -134,7 +135,7 @@ async function handleEvent(input: unknown) {
     work = (await devrev.worksGet({ id: event.payload.context.object_id }, { timeout: 10000 })).data.work;
   } catch (error) { throw devRevFailure('works.get', error); }
   console.info('[newrelic-context] issue:loaded');
-  if (work.type !== 'issue' || (work.id !== event.payload.context.object_id && work.display_id !== event.payload.context.object_id)) throw new Error('Fetch New Relic context is available only on the selected issue.');
+  if (work.type !== 'issue' || (work.id !== event.payload.context.object_id && work.display_id !== event.payload.context.object_id)) throw new Error('New Relic incident triage is available only on the selected issue.');
   const reference = work.sync_metadata?.external_reference ?? work.body?.match(/\[Open in New Relic\]\(<([^>]+)>\)/)?.[1];
   const source = parseIssueReference(reference ?? '');
   const recordId = work.sync_metadata?.external_record_id;
@@ -143,8 +144,9 @@ async function handleEvent(input: unknown) {
   const requestHash = createHash('sha256').update(`${event.context.snap_in_id}:${event.payload.request_id}`).digest('hex');
   const evidenceOnly = ['evidence', 'recent_evidence'].includes(event.payload.action.value);
   const github = event.payload.action.value === 'github';
+  const triage = event.payload.action.value === 'triage' ? triageConfiguration(event.input_data?.global_values, work.id) : undefined;
   const mode = ['recent', 'recent_evidence'].includes(event.payload.action.value) ? 'recent' : 'alert';
-  const agentId = evidenceOnly || handoff ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id);
+  const agentId = triage?.agentId ?? (evidenceOnly || handoff ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id));
   const eventSource = event.input_data?.event_sources?.[RESPONSE_SOURCE];
   const serviceToken = event.context.secrets.service_account_token;
   const serviceAccountId = event.context.service_account_id;
@@ -176,7 +178,10 @@ async function handleEvent(input: unknown) {
     return startAnalysis({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
       serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
       snapInId: event.context.snap_in_id, issueId: work.id, agentId, requestHash, sourceUrl,
-      prompt: analysisPrompt(work.title ?? '', sourceUrl, issue, snapshots, mode, [key, actorToken, serviceToken!]),
+      ...(triage ? { triage: triage.binding } : {}),
+      prompt: triage ? triagePrompt({ title: work.title ?? '', issueId: work.id, sourceUrl, issue, snapshots, requestHash,
+        binding: triage.binding, baseRef: triage.baseRef, secrets: [key, actorToken, serviceToken!] })
+        : analysisPrompt(work.title ?? '', sourceUrl, issue, snapshots, mode, [key, actorToken, serviceToken!]),
     });
   }
   const { plan, results } = await collectSnapshot(newrelic, source.accountId, issue, mode, now);
