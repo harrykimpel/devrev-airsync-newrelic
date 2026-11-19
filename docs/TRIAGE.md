@@ -7,11 +7,14 @@ that reached GitHub but stopped at coding also qualifies; an analysis-only parti
 result does not. The individual Create GitHub issue action supports the same
 setting. See [NEW_RELIC_INVESTIGATION.md](NEW_RELIC_INVESTIGATION.md).
 
-Version 1.6.0 also offers optional source acknowledgment before these stages.
-Enable **Acknowledge in New Relic when triage starts** in the snap-in's
+Version 1.6.0 added optional source acknowledgment before these stages. Version
+1.7.2 also applies that setting to both individual Analyze buttons.
+Enable **Acknowledge New Relic when analysis starts** in the snap-in's
 organization configuration; it is off by default. It uses the clicking user's
 existing New Relic connection. Failures are reported separately and do not stop
-the analysis/GitHub workflow. The standalone **Acknowledge in New Relic** button
+the analysis/GitHub workflow. Sync and opening a component never acknowledge.
+Previously acknowledged source alerts keep that state when imported.
+The standalone **Acknowledge in New Relic** button
 works independently of that setting and needs no configured agent. See
 [NEW_RELIC_ACKNOWLEDGMENT.md](NEW_RELIC_ACKNOWLEDGMENT.md).
 

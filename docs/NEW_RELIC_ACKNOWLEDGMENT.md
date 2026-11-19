@@ -1,4 +1,4 @@
-# Report acknowledgment to New Relic (1.6.1)
+# Report acknowledgment to New Relic (1.7.2)
 
 The issue component provides **Acknowledge in New Relic**. It acknowledges the
 original New Relic Alert Intelligence issue through NerdGraph and posts the
@@ -33,17 +33,34 @@ Refresh the DevRev issue and open **New Relic incident triage**. Click
 **Acknowledge in New Relic** to use the standalone action. It needs the existing
 personal connection and issue access, but no analysis/GitHub agent configuration.
 
-To include acknowledgment in the combined workflow, open the snap-in's
-organization configuration, enable **Acknowledge in New Relic when triage starts**
+To include acknowledgment when analysis starts, open the snap-in's
+organization configuration, enable **Acknowledge New Relic when analysis starts**
 (`acknowledge_on_triage`), and save. This optional boolean defaults to false;
-upgrading alone does not start writing to New Relic. When enabled,
-**Triage and start fix** attempts acknowledgment after its configuration and issue
-access checks, before gathering evidence and starting the GitHub agent.
-Individual analysis, evidence, GitHub and coding actions do not acknowledge.
+upgrading alone does not enable the setting. In version 1.7.2, when enabled,
+**Analyze incident**, **Analyze latest 30 minutes**, and **Triage and start fix**
+attempt acknowledgment after their configuration and issue access checks, before
+gathering evidence and starting their agent. The internal input name is retained
+for upgrade compatibility. Existing true values now also apply to the individual
+Analyze buttons. Evidence, GitHub and coding actions do not request the
+acknowledgment mutation. The separately enabled investigation callback can still
+mark New Relic as investigating after a validated GitHub result.
+
+Syncing an alert and opening its issue/component never request acknowledgment.
+The AirSync HTTP client also explicitly rejects lifecycle mutations. Importing
+an old New Relic alert preserves any acknowledgment it already had; it does not
+clear it. Compare the source alert's UUID and acknowledgment timestamp with the
+DevRev issue's import time when determining whether an acknowledgment was new.
+The connector never automatically unacknowledges an imported alert.
+
+User-triggered acknowledgment logs include a fixed action value, for example
+`[newrelic-context] acknowledgment:requested action=alert` for Analyze incident,
+`action=recent` for the latest window, `action=triage` for the combined action,
+or `action=acknowledge` for the standalone button. The separate outcome
+`acknowledgment:already_acknowledged` means this invocation sent no acknowledgment.
 
 The acknowledgment outcome gets a separate internal discussion entry so a later
 agent callback cannot replace it. Rejection, uncertain completion, or failure
-to post that entry does not prevent the combined analysis/GitHub workflow. If
+to post that entry does not prevent individual analysis or the combined GitHub workflow. If
 the entry cannot be posted, the action response includes that reporting failure
 and logs contain `[newrelic-context] acknowledgment:report_failed`. A triage
 configuration, source-read or agent-start failure can still stop triage normally.

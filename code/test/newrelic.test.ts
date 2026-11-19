@@ -31,6 +31,14 @@ test('rejects unknown regions and missing keys before making requests', () => {
   expect(axios.create).not.toHaveBeenCalled();
 });
 
+test.each(['US', 'EU'])('AirSync clients cannot acknowledge or investigate source issues in %s', async (region) => {
+  const api = new HttpClient(event(region));
+  const issueId = '4469ab39-b257-44d0-97fe-78a712fb9d10';
+  await expect(api.acknowledgeIssue('123', issueId, 1000)).rejects.toMatchObject({ code: 'rejected', diagnostic: 'sync_read_only' });
+  await expect(api.markIssueInvestigating('123', issueId, 1000)).rejects.toMatchObject({ code: 'sync_read_only' });
+  expect(post).not.toHaveBeenCalled();
+});
+
 test('discovers accounts and queries the selected account with cursor variables', async () => {
   const client = new HttpClient(event());
   post.mockResolvedValueOnce({ data: { data: { actor: { accounts: [{ id: 123, name: 'Production' }] } } } });

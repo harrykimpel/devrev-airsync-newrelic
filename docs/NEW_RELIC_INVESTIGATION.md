@@ -13,7 +13,8 @@ This optional boolean (`investigate_on_github_issue`) defaults to false.
 
 The lifecycle becomes:
 
-1. **Triage starts:** optional acknowledgment through the existing setting.
+1. **User starts analysis or triage:** optional acknowledgment through the existing
+   setting (both individual Analyze buttons are included from 1.7.2).
 2. **GitHub issue confirmed:** optional native New Relic investigation update.
 3. **Coding/deployment/recovery:** unchanged; this release does not resolve alerts
    or infer a fix from a GitHub issue, assignment, PR or closed alert.

@@ -110,9 +110,10 @@ Open an imported issue and find the **New Relic incident triage** component:
 - **Acknowledge in New Relic** acknowledges the source alert using your existing
   personal New Relic connection and posts the verified outcome internally. It
   does not invoke an agent or require a separate key. To include this step in
-  **Triage and start fix**, enable **Acknowledge in New Relic when triage starts**
+  **Analyze incident**, **Analyze latest 30 minutes**, and **Triage and start fix**,
+  enable **Acknowledge New Relic when analysis starts**
   in the snap-in's organization configuration (off by default). Acknowledgment
-  failures do not stop the combined workflow. See the
+  failures do not stop analysis or the combined workflow. See the
   [acknowledgment setup and verification guide](docs/NEW_RELIC_ACKNOWLEDGMENT.md).
 
 Version 1.7.0 can also mark the source New Relic issue as **investigating** after
@@ -126,6 +127,12 @@ is needed. See the [investigation status guide](docs/NEW_RELIC_INVESTIGATION.md)
 
 Version 1.7.1 shortens this setting's label to meet DevRev's 50-character input
 display-name limit, fixing the manifest parse error during deployment.
+
+Version 1.7.2 includes both individual Analyze buttons in optional acknowledgment
+(the internal setting remains `acknowledge_on_triage`). AirSync clients reject
+lifecycle mutations, and opening the issue/component remains read-only. Importing
+an older alert preserves its existing New Relic acknowledgment; it does not reset
+it. A new DevRev issue therefore does not necessarily represent a new source alert.
 
 Version 1.6.1 improves acknowledgment confirmation with bounded read-only retries
 and diagnostic codes for source lookup, mutation receipt and read-back failures.
