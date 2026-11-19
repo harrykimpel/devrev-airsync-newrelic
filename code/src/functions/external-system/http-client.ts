@@ -21,7 +21,7 @@ export class NewRelicAcknowledgmentError extends Error {
   }
 }
 
-export type AcknowledgmentStatus = 'acknowledged' | 'already_acknowledged' | 'closed';
+export type AcknowledgmentStatus = 'acknowledged' | 'acknowledged_by_api' | 'already_acknowledged' | 'closed';
 
 export class NewRelicInvestigationError extends Error {
   constructor(readonly code: 'invalid_source' | 'source_read_failed' | 'unsupported_state' | 'mutation_rejected' | 'mutation_unconfirmed' | 'read_back_pending' | 'sync_read_only') {
@@ -177,7 +177,14 @@ export class HttpClient {
         diagnostic = 'read_back_pending';
       } catch { diagnostic = 'read_back_failed'; }
     }
-    throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic ?? diagnostic);
+    if (!receiptDiagnostic) {
+      // A null business error plus an exact ACK/account/issue receipt confirms
+      // the request. An inconclusive follow-up query must not turn that success
+      // into an uncertain write, or imply that query state was independently verified.
+      console.info(`[newrelic-context] acknowledgment:api_confirmed code=${diagnostic}`);
+      return 'acknowledged_by_api';
+    }
+    throw new NewRelicAcknowledgmentError('unconfirmed', receiptDiagnostic);
   }
 
   async markIssueInvestigating(accountId: string, issueId: string, createdAt: number): Promise<'investigating' | 'already_investigating' | 'closed'> {

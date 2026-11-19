@@ -134,6 +134,11 @@ lifecycle mutations, and opening the issue/component remains read-only. Importin
 an older alert preserves its existing New Relic acknowledgment; it does not reset
 it. A new DevRev issue therefore does not necessarily represent a new source alert.
 
+Version 1.7.3 reports an exact, error-free New Relic `ACK` response as
+API-confirmed acknowledgment even if the follow-up issue query is inconclusive.
+The comment distinguishes request confirmation from independently verified source
+state. Missing/mismatched receipts still require source confirmation.
+
 Version 1.6.1 improves acknowledgment confirmation with bounded read-only retries
 and diagnostic codes for source lookup, mutation receipt and read-back failures.
 It reconciles uncertain mutation responses against the exact source issue and

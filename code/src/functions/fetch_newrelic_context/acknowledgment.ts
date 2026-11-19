@@ -6,6 +6,7 @@ import { AcknowledgmentDiagnostic, AcknowledgmentStatus, HttpClient, NewRelicAck
 type Outcome = AcknowledgmentStatus | 'rejected' | 'unconfirmed';
 const descriptions: Record<Outcome, string> = {
   acknowledged: 'The source New Relic issue is acknowledged. The acknowledgment was verified by reading it back from New Relic.',
+  acknowledged_by_api: 'New Relic confirmed the acknowledgment request for this alert. The follow-up state check was inconclusive.',
   already_acknowledged: 'The source New Relic issue was already acknowledged. No acknowledgment was sent.',
   closed: 'The source New Relic issue is already closed. No acknowledgment was sent; this does not establish that a fix was deployed or recovery was verified.',
   rejected: 'New Relic did not accept the acknowledgment. Check that the existing connection owner can manage alert issues. Inspect the source issue before retrying.',
@@ -30,10 +31,6 @@ export async function acknowledgeSource(options: {
   if (diagnostic) console.info(`[newrelic-context] acknowledgment:diagnostic code=${diagnostic}`);
   const explanation = diagnostic === 'source_read_failed'
     ? 'The source issue could not be read. No acknowledgment was sent; check source account access, retention and the imported creation date.'
-    : diagnostic === 'read_back_pending'
-    ? 'New Relic accepted the acknowledgment, but its issue query has not yet shown the acknowledgment timestamp after three checks. The issue may already appear acknowledged in New Relic.'
-    : diagnostic === 'read_back_failed'
-    ? 'New Relic accepted the acknowledgment, but the subsequent issue queries failed. Check the source issue before retrying.'
     : descriptions[outcome];
   const detail = explanation + (diagnostic ? ` Diagnostic: ${diagnostic}.` : '');
   const externalRef = `newrelic-acknowledgment:${options.requestHash}`;

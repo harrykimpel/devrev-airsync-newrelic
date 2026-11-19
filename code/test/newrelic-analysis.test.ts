@@ -834,3 +834,14 @@ test('an error that wins terminal arbitration never triggers investigation from 
   expect(mark).not.toHaveBeenCalled();
   expect(agent.snapInsResources).not.toHaveBeenCalled();
 });
+
+test('an API-confirmed acknowledgment with inconclusive read-back remains a successful triage step', async () => {
+  jest.spyOn(HttpClient.prototype, 'acknowledgeIssue').mockResolvedValue('acknowledged_by_api');
+  const input = click('triage');
+  Object.assign(input.input_data.global_values, { acknowledge_on_triage: true });
+  await expect(fetchContext([input])).resolves.toMatchObject({ status: 'success', acknowledgment_status: 'acknowledged_by_api' });
+  const body = actor.timelineEntriesCreate.mock.calls[0][0].body;
+  expect(body).toContain('New Relic confirmed the acknowledgment request');
+  expect(body).not.toContain('could not be confirmed');
+  expect(agent.aiAgentEventsExecuteAsync).toHaveBeenCalledTimes(1);
+});
