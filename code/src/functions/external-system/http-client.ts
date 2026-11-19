@@ -9,6 +9,16 @@ export class NewRelicApiError extends Error {
   }
 }
 
+export class NewRelicAcknowledgmentError extends Error {
+  constructor(readonly code: 'rejected' | 'unconfirmed') {
+    super(code === 'rejected'
+      ? 'New Relic rejected the acknowledgment. Check that the connection owner can manage alert issues.'
+      : 'The acknowledgment could not be confirmed. Check the source issue before retrying; the request may have taken effect.');
+  }
+}
+
+export type AcknowledgmentStatus = 'acknowledged' | 'already_acknowledged' | 'closed';
+
 export class HttpClient {
   private readonly http: AxiosInstance;
   readonly region: 'US' | 'EU';
@@ -80,13 +90,51 @@ export class HttpClient {
       query($accountId: Int!) {
         actor { account(id: $accountId) { aiIssues {
           issues(filter: { ids: [${JSON.stringify(issueId)}] }, timeWindow: { startTime: ${start}, endTime: ${Date.now()} }) {
-            issues { issueId title priority state createdAt updatedAt entityNames entityGuids }
+            issues { issueId title priority state createdAt updatedAt entityNames entityGuids acknowledgedAt }
           }
         } } }
       }`, { accountId: Number(accountId) });
     const issue = data.actor?.account?.aiIssues?.issues?.issues?.find((candidate) => candidate.issueId === issueId);
     if (!issue) throw new NewRelicApiError('Source issue is unavailable. Check account access and New Relic issue retention.');
     return issue;
+  }
+
+  async acknowledgeIssue(accountId: string, issueId: string, createdAt: number): Promise<AcknowledgmentStatus> {
+    // Mutations accept only the UUID used by Alert Intelligence, not an arbitrary
+    // external identifier or any ID supplied by an agent response.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) {
+      throw new NewRelicAcknowledgmentError('rejected');
+    }
+    const acknowledged = (issue: NewRelicIssue) => Number.isSafeInteger(issue.acknowledgedAt) && issue.acknowledgedAt! > 0;
+    const before = await this.getIssue(accountId, issueId, createdAt);
+    if (before.state === 'CLOSED') return 'closed';
+    if (acknowledged(before)) return 'already_acknowledged';
+    if (!['CREATED', 'ACTIVATED', 'DEACTIVATED'].includes(before.state)) throw new NewRelicAcknowledgmentError('rejected');
+    let data: { aiIssuesAckIssue?: { error?: unknown; result?: { action?: string; accountId?: number; issueId?: string } } };
+    try {
+      data = await this.query(`
+        mutation($accountId: Int!) {
+          aiIssuesAckIssue(accountId: $accountId, issueId: ${JSON.stringify(issueId)}) {
+            error
+            result { action accountId issueId }
+          }
+        }`, { accountId: Number(accountId) });
+    } catch {
+      // A lost response is ambiguous. Never repeat the mutation automatically,
+      // or expose the raw response (which can include credentials).
+      throw new NewRelicAcknowledgmentError('unconfirmed');
+    }
+    const mutation = data.aiIssuesAckIssue;
+    if (mutation?.error !== null && mutation?.error !== undefined) throw new NewRelicAcknowledgmentError('rejected');
+    if (mutation?.error !== null || mutation.result?.action !== 'ACK' ||
+      mutation.result.accountId !== Number(accountId) || mutation.result.issueId !== issueId) {
+      throw new NewRelicAcknowledgmentError('unconfirmed');
+    }
+    try {
+      const after = await this.getIssue(accountId, issueId, createdAt);
+      if (acknowledged(after)) return 'acknowledged';
+    } catch { /* The mutation may have succeeded; leave read-back uncertainty visible. */ }
+    throw new NewRelicAcknowledgmentError('unconfirmed');
   }
 
   async nrql(accountId: string, query: string): Promise<Record<string, unknown>[]> {

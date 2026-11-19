@@ -107,6 +107,18 @@ Open an imported issue and find the **New Relic incident triage** component:
   internal discussion; an assignment alone is not reported as a completed fix.
 - **Check coding progress** asks the agent to read the assignment and linked PR
   state. It posts the PR link when available and never starts another coding run.
+- **Acknowledge in New Relic** acknowledges the source alert using your existing
+  personal New Relic connection and posts the verified outcome internally. It
+  does not invoke an agent or require a separate key. To include this step in
+  **Triage and start fix**, enable **Acknowledge in New Relic when triage starts**
+  in the snap-in's organization configuration (off by default). Acknowledgment
+  failures do not stop the combined workflow. See the
+  [acknowledgment setup and verification guide](docs/NEW_RELIC_ACKNOWLEDGMENT.md).
+
+Version 1.6.0 adds acknowledgment through NerdGraph. The connection owner needs
+permission to manage alert issues in addition to query access. No New Relic MCP
+or Advanced Compute analysis tools are used. The action does not resolve alerts,
+report engineering progress to New Relic, or establish recovery.
 
 Version 1.5.0 adds the combined action and the incident-triage wording. The
 individual analysis buttons still invoke the Incident Analyst; the combined mode

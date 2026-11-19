@@ -11,6 +11,7 @@ export interface NewRelicIssue {
   state: string;
   createdAt: number;
   updatedAt: number;
+  acknowledgedAt?: number | null;
   entityNames?: string[];
   entityGuids?: string[];
 }

@@ -1,5 +1,13 @@
 # One-click New Relic incident triage (1.5.0)
 
+Version 1.6.0 also offers optional source acknowledgment before these stages.
+Enable **Acknowledge in New Relic when triage starts** in the snap-in's
+organization configuration; it is off by default. It uses the clicking user's
+existing New Relic connection. Failures are reported separately and do not stop
+the analysis/GitHub workflow. The standalone **Acknowledge in New Relic** button
+works independently of that setting and needs no configured agent. See
+[NEW_RELIC_ACKNOWLEDGMENT.md](NEW_RELIC_ACKNOWLEDGMENT.md).
+
 The issue component is now **New Relic incident triage**. Its primary button,
 **Triage and start fix**, requests all three stages:
 

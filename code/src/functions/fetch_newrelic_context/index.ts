@@ -10,6 +10,7 @@ import { planContext, QueryResult, renderContext, traceSpansQuery } from './cont
 import { handoffGitHub } from './github-handoff';
 import { handoffCoding } from './coding-handoff';
 import { triageConfiguration, triagePrompt } from './triage-handoff';
+import { acknowledgeSource } from './acknowledgment';
 
 interface ContextEvent {
   payload: { action: { id: string; value: string; timestamp?: string | number }; context: { object_id: string; parent_core_object_id?: string }; request_id: string; actor_id?: string };
@@ -61,7 +62,7 @@ function validateEvent(input: unknown): ContextEvent {
   if (!nonEmpty(event?.context?.snap_in_id)) throw new ContextActionError('missing_installation', 'The action is missing its snap-in installation ID.');
   if (!nonEmpty(event?.context?.secrets?.actor_session_token)) throw new ContextActionError('missing_actor_token', 'Sign in and grant the issue:read impersonation permission for this snap-in.');
   if (!nonEmpty(event?.execution_metadata?.devrev_endpoint)) throw new ContextActionError('missing_endpoint', 'The action is missing its DevRev endpoint.');
-  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding', 'coding_status', 'triage'].includes(event.payload.action.value)) {
+  if (event?.payload?.action?.id !== 'fetch_newrelic_context' || !['alert', 'recent', 'evidence', 'recent_evidence', 'github', 'coding', 'coding_status', 'triage', 'acknowledge'].includes(event.payload.action.value)) {
     throw new ContextActionError('invalid_action', 'Run this action from New Relic incident triage on a DevRev issue while signed in.');
   }
   return { ...event, payload: { ...event.payload, context: { object_id: issueId }, request_id: requestIdentity(event, issueId) } };
@@ -143,14 +144,15 @@ async function handleEvent(input: unknown) {
   const sourceUrl = issuePermalink(source.accountId, source.issueId, source.region);
   const requestHash = createHash('sha256').update(`${event.context.snap_in_id}:${event.payload.request_id}`).digest('hex');
   const evidenceOnly = ['evidence', 'recent_evidence'].includes(event.payload.action.value);
+  const acknowledgmentOnly = event.payload.action.value === 'acknowledge';
   const github = event.payload.action.value === 'github';
   const triage = event.payload.action.value === 'triage' ? triageConfiguration(event.input_data?.global_values, work.id) : undefined;
   const mode = ['recent', 'recent_evidence'].includes(event.payload.action.value) ? 'recent' : 'alert';
-  const agentId = triage?.agentId ?? (evidenceOnly || handoff ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id));
+  const agentId = triage?.agentId ?? (evidenceOnly || handoff || acknowledgmentOnly ? '' : configuredAgent(event.input_data?.global_values?.analysis_agent_id, work.id));
   const eventSource = event.input_data?.event_sources?.[RESPONSE_SOURCE];
   const serviceToken = event.context.secrets.service_account_token;
   const serviceAccountId = event.context.service_account_id;
-  if (!evidenceOnly && (!nonEmpty(eventSource) || !nonEmpty(serviceToken) || !nonEmpty(serviceAccountId))) {
+  if (!evidenceOnly && !acknowledgmentOnly && (!nonEmpty(eventSource) || !nonEmpty(serviceToken) || !nonEmpty(serviceAccountId))) {
     throw new AnalysisError('missing_analysis_context', 'The snap-in is missing its analysis response event source or service context. Upgrade the current installation with the analysis manifest.');
   }
   if (github) {
@@ -171,11 +173,17 @@ async function handleEvent(input: unknown) {
       baseBranchValue: globals?.coding_agent_base_branch });
   }
   const newrelic = new HttpClient({ org_id: source.region, key }, 10000);
+  const acknowledgment = acknowledgmentOnly || (triage && event.input_data?.global_values?.acknowledge_on_triage === true)
+    ? await acknowledgeSource({ newrelic, devrev, issueId: work.id, accountId: source.accountId, sourceIssueId: source.issueId,
+      createdAt: Date.parse(work.created_date ?? ''), sourceUrl, requestHash }) : undefined;
+  if (acknowledgmentOnly) {
+    return { status: 'success', acknowledgment_status: acknowledgment!.outcome, detail: acknowledgment!.detail };
+  }
   const issue = await newrelic.getIssue(source.accountId, source.issueId, Date.parse(work.created_date ?? ''));
   const now = Date.now();
   if (!evidenceOnly) {
     const snapshots = await Promise.all((['alert', 'recent'] as const).map((window) => collectSnapshot(newrelic, source.accountId, issue, window, now)));
-    return startAnalysis({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
+    const result = await startAnalysis({ endpoint: event.execution_metadata.devrev_endpoint, actorToken,
       serviceToken: serviceToken!, serviceAccountId: serviceAccountId!, eventSource: eventSource!,
       snapInId: event.context.snap_in_id, issueId: work.id, agentId, requestHash, sourceUrl,
       ...(triage ? { triage: triage.binding } : {}),
@@ -183,6 +191,7 @@ async function handleEvent(input: unknown) {
         binding: triage.binding, baseRef: triage.baseRef, secrets: [key, actorToken, serviceToken!] })
         : analysisPrompt(work.title ?? '', sourceUrl, issue, snapshots, mode, [key, actorToken, serviceToken!]),
     });
+    return acknowledgment ? { ...result, acknowledgment_status: acknowledgment.outcome, detail: result.detail + ' ' + acknowledgment.detail } : result;
   }
   const { plan, results } = await collectSnapshot(newrelic, source.accountId, issue, mode, now);
   const body = renderContext(sourceUrl, source.accountId, plan, results, [key, actorToken]);

@@ -43,6 +43,13 @@ functions:
 
 inputs:
   organization:
+    - name: acknowledge_on_triage
+      description: Acknowledge the source New Relic issue when Triage and start fix is clicked. Uses the clicking user's existing New Relic connection; acknowledgment failures do not stop triage.
+      field_type: bool
+      is_required: false
+      default_value: false
+      ui:
+        display_name: Acknowledge in New Relic when triage starts
     - name: analysis_agent_id
       description: Full DON of a published internal DevRev agent in this organization. Used by both analysis buttons.
       field_type: text
@@ -107,7 +114,7 @@ keyrings:
   user:
     - name: newrelic_context
       display_name: New Relic context connection
-      description: Your New Relic user key with query access to the source alert account; select the matching regional connection.
+      description: Your New Relic user key with query access to the source alert account; acknowledgment also requires permission to manage alert issues. Select the matching regional connection.
       types:
         - newrelic-user-key
 
@@ -133,7 +140,7 @@ snap_components:
             - type: content
               elements:
                 - type: plain_text
-                  text: Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; the brief and verified links appear in the internal discussion.
+                  text: Investigate this alert, analyze recent telemetry, and coordinate a fix through GitHub. Triage and start fix runs all three steps; it also acknowledges the source alert when enabled in snap-in settings. The brief and verified links appear in the internal discussion.
             - type: actions
               direction: row
               elements:
@@ -206,6 +213,16 @@ snap_components:
                   text:
                     type: plain_text
                     text: Check coding progress
+            - type: actions
+              direction: row
+              elements:
+                - type: button
+                  action_id: fetch_newrelic_context
+                  action_type: remote
+                  value: acknowledge
+                  text:
+                    type: plain_text
+                    text: Acknowledge in New Relic
 
 keyring_types:
   - id: newrelic-user-key
